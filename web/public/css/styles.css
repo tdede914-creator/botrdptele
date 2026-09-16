@@ -54,6 +54,8 @@ footer{border-top:1px solid var(--card-brd);padding:26px 0;color:var(--muted);fo
 .tabs{display:flex;gap:8px;padding:22px 0 8px;flex-wrap:wrap}
 .tab{background:transparent;border:1px solid var(--card-brd);color:var(--muted);padding:10px 18px;border-radius:11px;cursor:pointer;font-weight:600;font-size:14px;font-family:inherit}
 .tab.active{background:var(--card);color:var(--txt);border-color:var(--accent)}
+.subtab{background:transparent;border:1px solid var(--card-brd);color:var(--muted);padding:8px 14px;border-radius:10px;cursor:pointer;font-weight:600;font-size:13px;font-family:inherit}
+.subtab.active{background:var(--card);color:var(--txt);border-color:var(--accent)}
 .grid{display:grid;gap:18px}
 .grid-2{grid-template-columns:1fr 1fr}
 .grid-3{grid-template-columns:repeat(3,1fr)}

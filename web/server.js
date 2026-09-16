@@ -17,6 +17,9 @@ require('./db'); // aktifkan WAL + busy_timeout, buka koneksi DB bersama
 const db = require('./db');
 const auth = require('./auth');
 const rdpService = require('./services/rdpService');
+const vpsService = require('./services/vpsService');
+const cloud9Service = require('./services/cloud9Service');
+const fastpanelService = require('./services/fastpanelService');
 const depositService = require('./services/depositService');
 const checkoutService = require('./services/checkoutService');
 const { getUser, getBalance, isAdmin } = require('../src/utils/userManager');
@@ -137,15 +140,25 @@ const server = http.createServer(async (req, res) => {
         const duration = parsed.searchParams.get('duration');
         return sendJson(res, 200, await rdpService.getOrderOptions(ram, core, duration));
       }
-      if (p === '/api/rdp/order' && req.method === 'POST') {
+      // Endpoint order/install GENERIK untuk semua layanan.
+      // body = { kind: 'rdp_order'|'vps_order'|'cloud9_order'|'fastpanel_order'|'rdp_install'|'cloud9_install'|'fastpanel_install', params:{...} }
+      if (p === '/api/order' && req.method === 'POST') {
         const body = await readBody(req);
-        if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
-        return sendJson(res, 200, await checkoutService.startOrder(uid, body));
+        if (!body || !body.kind) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await checkoutService.start(uid, body.kind, body.params || {}));
       }
-      if (p === '/api/rdp/install' && req.method === 'POST') {
-        const body = await readBody(req);
-        if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
-        return sendJson(res, 200, await checkoutService.startInstall(uid, body));
+      // Katalog per layanan.
+      if (p === '/api/vps/products' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, products: await vpsService.listProducts() });
+      }
+      if (p === '/api/vps/options' && req.method === 'GET') {
+        return sendJson(res, 200, await vpsService.getOrderOptions(parsed.searchParams.get('ram'), parsed.searchParams.get('core'), parsed.searchParams.get('duration')));
+      }
+      if (p === '/api/cloud9/products' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, products: await cloud9Service.listProducts() });
+      }
+      if (p === '/api/fastpanel/products' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, products: await fastpanelService.listProducts() });
       }
       if (p === '/api/checkout/status' && req.method === 'GET') {
         const trx = parsed.searchParams.get('trx');

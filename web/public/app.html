@@ -22,16 +22,16 @@
   <div class="container">
     <div class="tabs">
       <button class="tab active" data-tab="dashboard">🏠 Dashboard</button>
-      <button class="tab" data-tab="order">🖥️ Order RDP</button>
-      <button class="tab" data-tab="install">🔑 Install RDP</button>
+      <button class="tab" data-tab="order">🛒 Order</button>
+      <button class="tab" data-tab="install">🔧 Jasa Install</button>
       <button class="tab" data-tab="deposit">💳 Deposit</button>
     </div>
 
     <!-- Dashboard -->
     <section id="tab-dashboard" class="tabpane">
       <div class="notice info hidden" id="guest-note" style="margin-bottom:16px">
-        👋 Kamu memakai mode <b>Tamu</b>. Order & Install RDP tetap bisa — pembayaran lewat <b>QRIS</b>.
-        <b>Masuk</b> untuk bayar pakai saldo & melihat daftar RDP kamu.
+        👋 Kamu memakai mode <b>Tamu</b>. Semua order & install tetap bisa — pembayaran lewat <b>QRIS</b>.
+        <b>Masuk</b> untuk bayar pakai saldo & melihat daftar layanan kamu.
       </div>
       <div class="grid grid-3" style="margin-bottom:18px" id="stats-grid">
         <div class="card"><div class="sub">Saldo Kamu</div><div class="stat" id="d-balance">…</div></div>
@@ -44,7 +44,7 @@
         <div id="active-jobs"></div>
       </div>
       <div class="card" style="margin-bottom:18px">
-        <h3>RDP Saya</h3><div class="sub">Daftar RDP yang kamu miliki</div>
+        <h3>Layanan Saya</h3><div class="sub">RDP/VPS yang kamu miliki</div>
         <div id="my-rdp"><span class="muted">Memuat…</span></div>
       </div>
       <div class="card">
@@ -53,56 +53,125 @@
       </div>
     </section>
 
-    <!-- Order RDP -->
+    <!-- ORDER -->
     <section id="tab-order" class="tabpane hidden">
-      <div class="card">
+      <div class="tabs" style="padding-top:0">
+        <button class="subtab active" data-sub="order" data-name="rdp">🖥️ RDP</button>
+        <button class="subtab" data-sub="order" data-name="vps">🧊 VPS</button>
+        <button class="subtab" data-sub="order" data-name="cloud9">☁️ Cloud9</button>
+        <button class="subtab" data-sub="order" data-name="fastpanel">🎛️ Fastpanel</button>
+      </div>
+
+      <!-- Order RDP -->
+      <div class="card subpane" id="order-rdp">
         <h3>Order RDP (Auto Create + Auto Install)</h3>
         <div class="sub">Pilih paket, durasi, region, dan Windows. VPS dibuat & RDP diinstall otomatis.</div>
-        <div id="order-step-pkg">
-          <label>1. Pilih Paket</label>
-          <div class="pkg-grid" id="pkg-grid"><span class="muted">Memuat paket…</span></div>
-        </div>
-        <div id="order-step-detail" class="hidden">
+        <label>1. Pilih Paket</label>
+        <div class="pkg-grid" id="rdp-pkg-grid"><span class="muted">Memuat paket…</span></div>
+        <div id="rdp-detail" class="hidden">
           <div class="grid grid-2">
-            <div><label>2. Durasi</label><select id="o-duration"></select></div>
-            <div><label>3. Region</label><select id="o-region"><option>Pilih paket dulu…</option></select></div>
+            <div><label>2. Durasi</label><select id="rdp-duration"></select></div>
+            <div><label>3. Region</label><select id="rdp-region"></select></div>
           </div>
           <div class="grid grid-2">
-            <div><label>4. Windows</label><select id="o-os"></select></div>
-            <div><label>5. Password RDP</label>
-              <select id="o-passmode"><option value="auto">Auto (acak, direkomendasikan)</option><option value="custom">Custom</option></select>
-            </div>
+            <div><label>4. Windows</label><select id="rdp-os"></select></div>
+            <div><label>5. Password RDP</label><select id="rdp-passmode"><option value="auto">Auto (acak)</option><option value="custom">Custom</option></select></div>
           </div>
-          <div id="o-custompass-wrap" class="hidden"><label>Password Custom</label><input id="o-custompass" placeholder="min 8, huruf+angka" /></div>
-          <div class="notice info" id="o-price"></div>
-          <div class="row-flex">
-            <button class="btn btn-primary" id="o-submit">🚀 Buat & Install RDP</button>
-            <button class="btn btn-ghost" id="o-reset">Ganti Paket</button>
-          </div>
+          <div id="rdp-custompass-wrap" class="hidden"><label>Password Custom</label><input id="rdp-custompass" placeholder="min 8, huruf+angka" /></div>
+          <div class="notice info" id="rdp-price"></div>
+          <div class="row-flex"><button class="btn btn-primary" id="rdp-submit">🚀 Buat & Install RDP</button><button class="btn btn-ghost" id="rdp-reset">Ganti Paket</button></div>
         </div>
-        <div id="order-progress" class="hidden"></div>
-        <div id="order-msg"></div>
+        <div id="rdp-msg"></div>
+      </div>
+
+      <!-- Order VPS -->
+      <div class="card subpane hidden" id="order-vps">
+        <h3>Order VPS (Auto Deploy)</h3>
+        <div class="sub">VPS Linux siap pakai — root + password dikirim setelah aktif.</div>
+        <label>1. Pilih Paket</label>
+        <div class="pkg-grid" id="vps-pkg-grid"><span class="muted">Memuat paket…</span></div>
+        <div id="vps-detail" class="hidden">
+          <div class="grid grid-2">
+            <div><label>2. Durasi</label><select id="vps-duration"></select></div>
+            <div><label>3. Region</label><select id="vps-region"></select></div>
+          </div>
+          <div><label>4. OS</label><select id="vps-os"></select></div>
+          <div class="notice info" id="vps-price"></div>
+          <div class="row-flex"><button class="btn btn-primary" id="vps-submit">🚀 Buat VPS</button><button class="btn btn-ghost" id="vps-reset">Ganti Paket</button></div>
+        </div>
+        <div id="vps-msg"></div>
+      </div>
+
+      <!-- Order Cloud9 -->
+      <div class="card subpane hidden" id="order-cloud9">
+        <h3>Order Cloud9 IDE (Auto Create + Install)</h3>
+        <div class="sub">VPS dibuat & Cloud9 diinstall otomatis. Akses via browser (port 8000/8880).</div>
+        <div id="cloud9-products"><span class="muted">Memuat produk…</span></div>
+        <div id="cloud9-msg"></div>
+      </div>
+
+      <!-- Order Fastpanel -->
+      <div class="card subpane hidden" id="order-fastpanel">
+        <h3>Order Fastpanel (Auto Create + Install)</h3>
+        <div class="sub">VPS dibuat & Fastpanel diinstall otomatis. Panel di port 8888 (HTTPS).</div>
+        <div id="fastpanel-products"><span class="muted">Memuat produk…</span></div>
+        <div id="fastpanel-msg"></div>
       </div>
     </section>
 
-    <!-- Install RDP -->
+    <!-- INSTALL -->
     <section id="tab-install" class="tabpane hidden">
-      <div class="card">
-        <h3>Install RDP di VPS Sendiri</h3>
-        <div class="sub">Punya VPS (fresh Ubuntu)? Masukkan kredensialnya, kami install RDP Windows-nya. Biaya install dipotong dari saldo.</div>
+      <div class="tabs" style="padding-top:0">
+        <button class="subtab active" data-sub="install" data-name="rdp">🖥️ RDP</button>
+        <button class="subtab" data-sub="install" data-name="cloud9">☁️ Cloud9</button>
+        <button class="subtab" data-sub="install" data-name="fastpanel">🎛️ Fastpanel</button>
+      </div>
+
+      <!-- Install RDP -->
+      <div class="card subpane" id="install-rdp">
+        <h3>Jasa Install RDP di VPS Sendiri</h3>
+        <div class="sub">Punya VPS (fresh Ubuntu)? Kami install RDP Windows-nya. Bayar via saldo/QRIS.</div>
         <div class="grid grid-2">
-          <div><label>IP VPS</label><input id="i-ip" placeholder="mis. 103.12.34.56" /></div>
-          <div><label>SSH User</label><input id="i-user" value="root" /></div>
+          <div><label>IP VPS</label><input id="irdp-ip" placeholder="mis. 103.12.34.56" /></div>
+          <div><label>SSH User</label><input id="irdp-user" value="root" /></div>
         </div>
-        <label>Password SSH VPS</label><input id="i-pass" type="password" placeholder="password root VPS" />
+        <label>Password SSH VPS</label><input id="irdp-pass" type="password" placeholder="password root VPS" />
         <div class="grid grid-2">
-          <div><label>Windows</label><select id="i-os"></select></div>
-          <div><label>Password RDP (opsional)</label><input id="i-rdppass" placeholder="kosongkan untuk auto" /></div>
+          <div><label>Provider VPS (untuk port RDP)</label><select id="irdp-provider"><option value="digitalocean">DigitalOcean / Linode / AWS (port 4443)</option><option value="upcloud">UpCloud (port 8443)</option></select></div>
+          <div><label>Windows</label><select id="irdp-os"></select></div>
         </div>
-        <div class="notice info" id="i-info"></div>
-        <button class="btn btn-primary" id="i-submit">🔧 Install RDP Sekarang</button>
-        <div id="install-progress" class="hidden"></div>
-        <div id="install-msg"></div>
+        <label>Password RDP (opsional)</label><input id="irdp-rdppass" placeholder="kosongkan untuk auto" />
+        <div class="notice info" id="irdp-info"></div>
+        <button class="btn btn-primary" id="irdp-submit">🔧 Install RDP</button>
+        <div id="irdp-msg"></div>
+      </div>
+
+      <!-- Install Cloud9 -->
+      <div class="card subpane hidden" id="install-cloud9">
+        <h3>Jasa Install Cloud9 di VPS Sendiri</h3>
+        <div class="sub">Cloud9 IDE diinstall di VPS milikmu (port 8000).</div>
+        <div class="grid grid-2">
+          <div><label>IP VPS</label><input id="ic9-ip" placeholder="mis. 103.12.34.56" /></div>
+          <div><label>SSH User</label><input id="ic9-user" value="root" /></div>
+        </div>
+        <label>Password SSH VPS</label><input id="ic9-pass" type="password" placeholder="password root VPS" />
+        <div class="notice info" id="ic9-info"></div>
+        <button class="btn btn-primary" id="ic9-submit">🔧 Install Cloud9</button>
+        <div id="ic9-msg"></div>
+      </div>
+
+      <!-- Install Fastpanel -->
+      <div class="card subpane hidden" id="install-fastpanel">
+        <h3>Jasa Install Fastpanel di VPS Sendiri</h3>
+        <div class="sub">Fastpanel diinstall di VPS milikmu (port 8888 HTTPS).</div>
+        <div class="grid grid-2">
+          <div><label>IP VPS</label><input id="ifp-ip" placeholder="mis. 103.12.34.56" /></div>
+          <div><label>SSH User</label><input id="ifp-user" value="root" /></div>
+        </div>
+        <label>Password SSH VPS</label><input id="ifp-pass" type="password" placeholder="password root VPS" />
+        <div class="notice info" id="ifp-info"></div>
+        <button class="btn btn-primary" id="ifp-submit">🔧 Install Fastpanel</button>
+        <div id="ifp-msg"></div>
       </div>
     </section>
 
@@ -130,7 +199,7 @@
     </section>
   </div>
 
-  <!-- Modal pembayaran QRIS (order/install saat bayar via QRIS) -->
+  <!-- Modal pembayaran QRIS -->
   <div id="qr-modal" class="modal hidden">
     <div class="modal-box">
       <h3>Bayar via QRIS</h3>

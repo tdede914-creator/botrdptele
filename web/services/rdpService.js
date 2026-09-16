@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const net = require('net');
 
 const vpsManager = require('../../src/utils/vpsManager');
-const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, linodeSetDirectDisk } = require('../../src/utils/doApi');
+const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken } = require('../../src/utils/doApi');
 const { isAdmin, getBalance, deductBalance, addBalance } = require('../../src/utils/userManager');
 const { installDedicatedRDP } = require('../../src/utils/dedicatedRdpInstaller');
 const RDPMonitor = require('../../src/utils/rdpMonitor');
@@ -221,14 +221,24 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
   const jobId = newJob(uid, 'order');
   setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Membuat VPS...', progress: 8 });
 
+  // Port RDP per provider (UpCloud 8443, lainnya 4443) + nama provider + base image.
+  const rdpPort = rdpPortForToken(token);
+  const provider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : (isUpCloudToken(token) ? 'upcloud' : 'digitalocean'));
+
   // Jalankan provisioning async.
   (async () => {
     const createSizeSlug = isAwsToken(token) ? normalizeAwsRdpSize(prod.size_slug) : prod.size_slug;
-    const baseImage = isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : 'ubuntu-22-04-x64');
+    const baseImage = isAwsToken(token) ? 'aws:ubuntu22.04'
+      : (isLinodeToken(token) ? 'linode/ubuntu22.04'
+      : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
     let dropletId = null;
+    let sshKey = null;      // UpCloud: auth pakai private key
+    let sshUser = 'root';
     try {
       const created = await createDroplet(token, hostname, regionSlug, createSizeSlug, baseImage, cloudInit);
       dropletId = created.dropletId;
+      sshKey = created.sshPrivateKey || null;
+      if (created.sshUsername) sshUser = created.sshUsername;
       if (!dropletId) {
         await releaseOrderSlot(productId, d);
         if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
@@ -251,10 +261,10 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
       await vpsManager.createVpsInstance({
         userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip,
         region: regionSlug, image: `rdp:${selectedOS.version}`, rootPassword: rdpPass,
-        expiresAt, durationDays: d
+        expiresAt, durationDays: d, rdpPort
       });
 
-      setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+      setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
 
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
       if (!sshReady) {
@@ -263,13 +273,12 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
       }
 
       setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
-      const provider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean');
-      const installPromise = installDedicatedRDP(ip, 'root', rootPass, { osVersion: selectedOS.version, password: rdpPass, provider }, mkInstallLogger(jobId, `web ${ip}`));
+      const installCfg = { osVersion: selectedOS.version, password: rdpPass, provider, rdpPort };
+      if (sshKey) { installCfg.privateKey = sshKey; if (sshUser !== 'root') installCfg.useSudo = true; }
+      const installPromise = installDedicatedRDP(ip, sshUser, rootPass, installCfg, mkInstallLogger(jobId, `web ${ip}`));
 
       // Linode Direct Disk: jadwal tetap 5/7/9 menit dari saat installer mulai (cara lama
-      // yang terbukti bekerja). JANGAN picu pada reboot pertama (SSH putus) — reboot itu
-      // dipakai reinstall.sh untuk masuk Alpine & menulis Windows; switch kernel saat itu
-      // membuat boot gagal (connection timeout).
+      // yang terbukti bekerja). JANGAN picu pada reboot pertama (SSH putus).
       if (isLinodeToken(token)) {
         const scheduleDD = (minutes) => setTimeout(async () => {
           try { await linodeSetDirectDisk(token, dropletId); console.log(`[web ${ip}] Linode Direct Disk diset (${minutes}m).`); }
@@ -280,14 +289,14 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
 
       await installPromise;
       setJob(jobId, { step: 'monitor', message: 'Menunggu Windows boot & RDP siap...', progress: 70 });
-      const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);
+      const monitor = new RDPMonitor(ip, sshUser, rootPass, rdpPass, rdpPort);
       const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, mkMonitorLogger(jobId, `web ${ip}`));
       try { monitor.disconnect(); } catch (_) {}
 
       if (result && result.success && result.rdpReady) {
-        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       }
     } catch (e) {
       console.error('[web] provisionOrder error:', e);
@@ -320,9 +329,11 @@ async function provisionInstall(uid, { ip, sshUser, sshPassword, osVersion, rdpP
     rdpPass = genWindowsPassword();
   }
   const refund = (opts.refund && opts.refund.uid) ? opts.refund : null;
+  // Port RDP: UpCloud 8443, provider lain 4443 (manual install tak punya token, jadi dari pilihan provider user).
+  const rdpPort = String(provider || '').toLowerCase() === 'upcloud' ? 8443 : 4443;
 
   const jobId = newJob(uid, 'install');
-  setJob(jobId, { status: 'installing', step: 'wait_ssh', message: 'Menghubungi VPS (SSH)...', progress: 20, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+  setJob(jobId, { status: 'installing', step: 'wait_ssh', message: 'Menghubungi VPS (SSH)...', progress: 20, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: os.name } });
 
   (async () => {
     try {
@@ -333,16 +344,16 @@ async function provisionInstall(uid, { ip, sshUser, sshPassword, osVersion, rdpP
         return;
       }
       setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
-      const installPromise = installDedicatedRDP(ip, sshUser || 'root', sshPassword, { osVersion: os.version, password: rdpPass, provider: provider || 'digitalocean' }, mkInstallLogger(jobId, `web-install ${ip}`));
+      const installPromise = installDedicatedRDP(ip, sshUser || 'root', sshPassword, { osVersion: os.version, password: rdpPass, provider: provider || 'digitalocean', rdpPort }, mkInstallLogger(jobId, `web-install ${ip}`));
       await installPromise;
       setJob(jobId, { step: 'monitor', message: 'Menunggu Windows boot & RDP siap...', progress: 70 });
-      const monitor = new RDPMonitor(ip, sshUser || 'root', sshPassword, rdpPass, 4443);
+      const monitor = new RDPMonitor(ip, sshUser || 'root', sshPassword, rdpPass, rdpPort);
       const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, mkMonitorLogger(jobId, `web-install ${ip}`));
       try { monitor.disconnect(); } catch (_) {}
       if (result && result.success && result.rdpReady) {
-        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: os.name } });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: os.name } });
       }
     } catch (e) {
       console.error('[web] provisionInstall error:', e);
@@ -363,7 +374,7 @@ async function listMyRdp(userId) {
     .map((r) => ({
       id: r.id,
       ip: r.ip,
-      server: r.ip ? `${r.ip}:4443` : '-',
+      server: r.ip ? `${r.ip}:${r.rdp_port || 4443}` : '-',
       region: r.region || '-',
       os: String(r.image || '').replace(/^rdp:/, ''),
       username: 'administrator',
@@ -375,6 +386,25 @@ async function listMyRdp(userId) {
 
 function osOptions() {
   return getStandardDedicatedOs().map((o) => ({ id: o.id, name: o.name, version: o.version }));
+}
+
+// Bungkus "prepare" seragam untuk lapisan checkout (saldo vs QRIS + refund).
+async function prepareOrder(params) {
+  const amt = await getOrderAmount(params.productId, params.durationDays);
+  if (!amt.ok) return amt;
+  return {
+    ok: true,
+    amount: amt.amount,
+    reserve: () => reserveOrderSlot(params.productId, params.durationDays),
+    release: () => releaseOrderSlot(params.productId, params.durationDays),
+    provision: (uid, opts) => provisionOrder(uid, params, opts)
+  };
+}
+async function prepareInstall(params) {
+  const v = validateInstallParams(params);
+  if (!v.ok) return v;
+  const amount = await getInstallCost();
+  return { ok: true, amount, provision: (uid, opts) => provisionInstall(uid, params, opts) };
 }
 
 // Validasi input install (dipakai sebelum minta bayar QRIS supaya user tak bayar untuk input invalid).
@@ -400,5 +430,9 @@ module.exports = {
   listMyRdp,
   osOptions,
   validateInstallParams,
-  getJob
+  prepareOrder,
+  prepareInstall,
+  getJob,
+  // helper bersama dipakai service lain (vps/cloud9/fastpanel)
+  _shared: { newJob, setJob, mkInstallLogger, mkMonitorLogger, pushLog, genAlphaNum, genWindowsPassword, rootCloudInit, normalizeAwsRdpSize, waitForPort }
 };
