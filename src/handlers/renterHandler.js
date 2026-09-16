@@ -7,7 +7,7 @@ const { Client } = require('ssh2');
 const renterManager = require('../utils/renterManager');
 const safeMessageEditor = require('../utils/safeMessageEdit');
 const menuBanner = require('../utils/menuBanner');
-const { getSizesForRegion, getRegions, getImages, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, providerName, linodeSetDirectDisk } = require('../utils/doApi');
+const { getSizesForRegion, getRegions, getImages, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, providerName, linodeSetDirectDisk, rdpPortForToken } = require('../utils/doApi');
 const { DEDICATED_OS_VERSIONS } = require('../config/constants');
 const { installDedicatedRDP } = require('../utils/dedicatedRdpInstaller');
 const RDPMonitor = require('../utils/rdpMonitor');
@@ -16,6 +16,35 @@ const QRCode = require('qrcode');
 const { createPayment, checkPaymentStatus, isPaymentStatusSuccessful } = require('../utils/payment');
 const { getBalance, deductBalance, addBalance } = require('../utils/userManager');
 const { notifyRentOrderSuccess, notifyOrderTestimonial } = require('../utils/orderNotifier');
+const { pack: cbPack } = require('../utils/cbToken');
+
+// -------------------------------------------------------------------------
+// Sizes cache
+// -------------------------------------------------------------------------
+// Panggilan `getSizesForRegion()` untuk Linode akan fetch SEMUA linode types
+// (paginated) tiap panggilan — 1-3 detik per call. Tanpa cache, klik tombol
+// pagination "Next" akan re-fetch, dan kalau slow/rate-limited, user melihat
+// bot "diam". Cache per (chatId + region + apiId) dengan TTL 5 menit.
+const sizesCache = new Map();
+const SIZES_CACHE_TTL_MS = 5 * 60 * 1000;
+
+function _sizesCacheKey(chatId, region, apiId) {
+  return `${chatId}_${region}_${apiId}`;
+}
+
+function getCachedSizes(chatId, region, apiId) {
+  const entry = sizesCache.get(_sizesCacheKey(chatId, region, apiId));
+  if (!entry) return null;
+  if (Date.now() - entry.at > SIZES_CACHE_TTL_MS) {
+    sizesCache.delete(_sizesCacheKey(chatId, region, apiId));
+    return null;
+  }
+  return entry.sizes;
+}
+
+function setCachedSizes(chatId, region, apiId, sizes) {
+  sizesCache.set(_sizesCacheKey(chatId, region, apiId), { sizes, at: Date.now() });
+}
 
 function genAlphaNum(n = 18) {
   // Strong enough for Linode root_pass: 11-128 chars, upper/lower/digit/symbol.
@@ -54,7 +83,13 @@ function genWindowsPassword() {
 }
 
 function apiLabel(api) {
-  const provider = api.provider || (api.provider_key === 'linode' ? 'Linode' : 'DigitalOcean');
+  const byKey = {
+    linode: 'Linode',
+    aws: 'AWS',
+    upcloud: 'UpCloud',
+    digitalocean: 'DigitalOcean',
+  };
+  const provider = api.provider || byKey[api.provider_key] || 'DigitalOcean';
   return `${provider} API#${api.id} • ${api.email || '-'}`;
 }
 
@@ -73,10 +108,6 @@ function normalizeAwsRdpSize(sizeSlug) {
 }
 
 
-// Linode Direct Disk: pakai jadwal tetap 5/7/9 menit dari saat installer mulai.
-// JANGAN memicu pada reboot pertama (saat SSH putus) — reboot itu dipakai reinstall.sh
-// untuk masuk Alpine & menulis Windows; mengganti kernel saat itu membuat boot gagal
-// (connection timeout). Jadwal 5/7/9 menit memberi Alpine waktu menulis lebih dulu.
 function scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip) {
   if (!isLinodeToken(token) || !dropletId) return;
   const run = (minutes) => setTimeout(async () => {
@@ -128,30 +159,24 @@ function getWindowsList() {
 
 
 async function sendRenterVpsReady(bot, chatId, data) {
-  const { ip, password, image, region, sizeSlug } = data;
+  const { ip, password, image, region, sizeSlug, provider } = data;
+  const isUpCloud = String(provider || '').toLowerCase() === 'upcloud';
+  const tipLine = isUpCloud
+    ? `\n💡 Kalau SSH \`Connection refused\` / \`timeout\`, tunggu 1-2 menit\n   lalu coba lagi (cloud-init masih finalize).\n`
+    : '';
   return bot.sendMessage(chatId,
-    `━━━ VPS BERHASIL DIBUAT ━━━
-` +
-    `📝 IP       : ${ip}
-` +
-    `📝 USER     : root
-` +
-    `📝 PASSWORD : ${password}
-` +
-    `📝 OS       : ${image}
-` +
-    `📝 REGION   : ${region}
-` +
-    `📝 SIZE     : ${sizeSlug}
-` +
-    `━━━━━━━━━━━━━━━━━━━━
-` +
-    `⚠️ Simpan data ini baik-baik.
-` +
-    `⚠️ Biaya resource mengikuti tagihan DigitalOcean kamu sendiri.
-
-` +
-    `Ketik /start untuk kembali ke menu.`,
+    `━━━ VPS BERHASIL DIBUAT ━━━\n` +
+    `📝 IP       : ${ip}\n` +
+    `📝 USER     : root\n` +
+    `📝 PASSWORD : ${password}\n` +
+    `📝 OS       : ${image}\n` +
+    `📝 REGION   : ${region}\n` +
+    `📝 SIZE     : ${sizeSlug}\n` +
+    `━━━━━━━━━━━━━━━━━━━━\n` +
+    `⚠️ Simpan data ini baik-baik.\n` +
+    `⚠️ Biaya resource mengikuti tagihan ${provider || 'cloud provider'} kamu sendiri.\n` +
+    tipLine +
+    `\nKetik /start untuk kembali ke menu.`,
     {
       reply_markup: {
         inline_keyboard: [
@@ -174,7 +199,8 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
     sizeSlug,
     responseTime = 'N/A',
     totalTime = 'N/A',
-    ready = true
+    ready = true,
+    port = 4443
   } = data;
 
   if (!ready) {
@@ -184,10 +210,10 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
     // this) had no way to know their credentials. Now we hand them the
     // full connection card with a "try before rebuild" nudge.
     const timeoutText = rdpPasswordUtil.buildTimeoutCardMarkdown({
-      ip, port: 4443, hostname, osName: windowsName, region,
+      ip, port, hostname, osName: windowsName, region,
       password: rdpPass, elapsedMin: totalTime
     });
-    const timeoutKb = rdpPasswordUtil.buildTimeoutCardKeyboard({ ip, port: 4443, password: rdpPass });
+    const timeoutKb = rdpPasswordUtil.buildTimeoutCardKeyboard({ ip, port, password: rdpPass });
     if (messageId) {
       try {
         await safeMessageEditor.editMessage(bot, chatId, messageId, timeoutText, {
@@ -207,7 +233,7 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
       `${ready ? '✅ INSTALL RDP SELESAI!' : '✅ Instalasi sudah diproses, namun RDP belum terdeteksi siap.'}
 
 ` +
-      `🌐 Server: ${ip}:4443
+      `🌐 Server: ${ip}:${port}
 ` +
       `👤 Username: administrator
 ` +
@@ -223,7 +249,7 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
       {
         reply_markup: {
           inline_keyboard: [
-            [{ text: '📋 Copy Detail RDP', callback_data: `copy_rdp_${ip}_${rdpPass}_${hostname || 'RDP'}` }],
+            [{ text: '📋 Copy Detail RDP', callback_data: `copy_rdp_${ip}:${port}_${rdpPass}` }],
             [{ text: '📖 Panduan Koneksi', callback_data: 'rdp_connection_guide' }],
             [{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]
           ]
@@ -244,7 +270,7 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
 ` +
     `📦 Size: ${sizeSlug || '-'}
 ` +
-    `🌐 Server: ${ip}:4443
+    `🌐 Server: ${ip}:${port}
 ` +
     `👤 Username: administrator
 ` +
@@ -257,7 +283,7 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
 ` +
     `1️⃣ Buka Remote Desktop Connection
 ` +
-    `2️⃣ Masukkan: ${ip}:4443
+    `2️⃣ Masukkan: ${ip}:${port}
 ` +
     `3️⃣ Username: administrator
 ` +
@@ -281,7 +307,7 @@ async function sendRenterRdpReadyMessages(bot, chatId, messageId, data) {
     {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📋 Copy Server', callback_data: `copy_server_${ip}:4443` }],
+          [{ text: '📋 Copy Server', callback_data: `copy_server_${ip}:${port}` }],
           [{ text: '📋 Copy Username', callback_data: 'copy_username_administrator' }],
           [{ text: '📋 Copy Password', callback_data: `copy_pass_${rdpPass}` }],
           [{ text: '📖 Panduan Koneksi', callback_data: 'rdp_connection_guide' }],
@@ -663,13 +689,14 @@ async function showApiMenu(bot, chatId, messageId) {
   const apis = await renterManager.listApis(chatId);
   const lines = apis.length
     ? apis.map(a => `${a.provider || 'DigitalOcean'} API#${a.id} • ${a.email || '-'} • ${Number(a.status) === 1 ? 'Aktif' : 'Nonaktif'}`).join('\n')
-    : 'Belum ada API cloud. Tambahkan API DigitalOcean, Linode, atau AWS.';
+    : 'Belum ada API cloud. Tambahkan API DigitalOcean, Linode, AWS, atau UpCloud.';
   return safeMessageEditor.editMessage(bot, chatId, messageId, `🔑 *API Cloud Renter*\n\n${lines}`, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: [
       [{ text: '➕ Tambah API DigitalOcean', callback_data: 'renter_api_add' }],
       [{ text: '➕ Tambah API Linode', callback_data: 'renter_api_add_linode' }],
       [{ text: '➕ Tambah API AWS', callback_data: 'renter_api_add_aws' }],
+      [{ text: '➕ Tambah API UpCloud', callback_data: 'renter_api_add_upcloud' }],
       [{ text: '🗑️ Delete API', callback_data: 'renter_api_delete_menu' }, { text: '⛔ Nonaktifkan API', callback_data: 'renter_api_disable_menu' }],
       [{ text: '« Kembali', callback_data: 'renter_menu' }]
     ] }
@@ -679,11 +706,18 @@ async function showApiMenu(bot, chatId, messageId) {
 async function promptAddApi(bot, chatId, messageId, sessionManager, provider = 'digitalocean') {
   if (!await requireRenter(bot, chatId, messageId)) return;
   const p = String(provider || 'digitalocean').toLowerCase();
-  const label = p === 'aws' ? 'AWS' : (p === 'linode' ? 'Linode' : 'DigitalOcean');
+  const label =
+    p === 'aws' ? 'AWS'
+    : p === 'linode' ? 'Linode'
+    : p === 'upcloud' ? 'UpCloud'
+    : 'DigitalOcean';
   sessionManager.setAdminSession(chatId, { action: 'renter_add_api', provider: p, messageId });
-  const extra = p === 'aws'
-    ? '\n\nFormat AWS:\n`ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION`\nContoh: `AKIAxxxx|secretxxxx|us-east-1`'
-    : '';
+  let extra = '';
+  if (p === 'aws') {
+    extra = '\n\nFormat AWS:\n`ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION`\nContoh: `AKIAxxxx|secretxxxx|us-east-1`';
+  } else if (p === 'upcloud') {
+    extra = '\n\nBuat token di https://hub.upcloud.com/account/api-tokens\nToken diawali `ucat_`. Set allowed IPs = `0.0.0.0/0` supaya bot bisa akses.';
+  }
   return safeMessageEditor.editMessage(bot, chatId, messageId, `🔑 Masukkan token/API ${label} kamu:${extra}\n\nToken akan dihapus dari chat setelah dikirim.`, {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'renter_api_menu' }]] }
@@ -694,8 +728,8 @@ async function showApiPick(bot, chatId, messageId, mode) {
   if (!await requireRenter(bot, chatId, messageId)) return;
   const apis = await renterManager.listApis(chatId, mode === 'use');
   if (!apis.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId, '❌ Belum ada API aktif. Tambahkan API DigitalOcean/Linode/AWS terlebih dahulu.', {
-      reply_markup: { inline_keyboard: [[{ text: '➕ API DO', callback_data: 'renter_api_add' }, { text: '➕ API Linode', callback_data: 'renter_api_add_linode' }], [{ text: '➕ API AWS', callback_data: 'renter_api_add_aws' }], [{ text: '« Kembali', callback_data: 'renter_api_menu' }]] }
+    return safeMessageEditor.editMessage(bot, chatId, messageId, '❌ Belum ada API aktif. Tambahkan API DigitalOcean/Linode/AWS/UpCloud terlebih dahulu.', {
+      reply_markup: { inline_keyboard: [[{ text: '➕ API DO', callback_data: 'renter_api_add' }, { text: '➕ API Linode', callback_data: 'renter_api_add_linode' }], [{ text: '➕ API AWS', callback_data: 'renter_api_add_aws' }, { text: '➕ API UpCloud', callback_data: 'renter_api_add_upcloud' }], [{ text: '« Kembali', callback_data: 'renter_api_menu' }]] }
     });
   }
   const prefix = mode === 'delete' ? 'renter_api_delete:' : (mode === 'disable' ? 'renter_api_disable:' : 'renter_api_use:');
@@ -719,23 +753,21 @@ async function processAddApi(bot, msg, sessionManager) {
   const sess = sessionManager.getAdminSession(chatId) || {};
   const provider = sess.provider || 'digitalocean';
   try { await bot.deleteMessage(chatId, msg.message_id); } catch (_) {}
-  const label = provider === 'aws' ? 'AWS' : (provider === 'linode' ? 'Linode' : 'DigitalOcean');
+  const label =
+    provider === 'aws' ? 'AWS'
+    : provider === 'linode' ? 'Linode'
+    : provider === 'upcloud' ? 'UpCloud'
+    : 'DigitalOcean';
   await bot.sendMessage(chatId, `⏳ Mengecek dan menyimpan API ${label} renter...`);
   try {
     const res = await renterManager.addApi(chatId, msg.text, provider);
-    const returnTo = sess.returnTo;
     sessionManager.clearAdminSession(chatId);
-    if (returnTo === 'open_api_rdp') {
-      // Jalur Install RDP via API sendiri: tawarkan lanjut langsung pilih region.
-      await bot.sendMessage(chatId,
-        `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}`,
-        { reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
-      );
-    } else {
-      await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
-    }
+    await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
   } catch (e) {
-    await bot.sendMessage(chatId, `❌ Gagal menambahkan API ${label}. ${e.message === 'INVALID_AWS_FORMAT' ? 'Format AWS harus ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION' : (e.message || '')}`);
+    let hint = e.message || '';
+    if (e.message === 'INVALID_AWS_FORMAT') hint = 'Format AWS harus ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION';
+    if (e.message === 'INVALID_UPCLOUD_TOKEN') hint = 'Token UpCloud harus diawali `ucat_` (buat di https://hub.upcloud.com/account/api-tokens)';
+    await bot.sendMessage(chatId, `❌ Gagal menambahkan API ${label}. ${hint}`);
   }
 }
 
@@ -744,7 +776,7 @@ async function showInfo(bot, chatId, messageId) {
   const renter = await renterManager.getRenter(chatId);
   const instances = await renterManager.listInstances(chatId);
   const backup = instances.length ? instances.map(x => {
-    const server = x.type === 'rdp' && x.ip ? `${x.ip}:4443` : (x.ip || '-');
+    const server = x.type === 'rdp' && x.ip ? `${x.ip}:${x.rdp_port || 4443}` : (x.ip || '-');
     return `${x.type.toUpperCase()} • ${server} • ${x.size_slug || '-'} • ${x.region || '-'}`;
   }).join('\n') : 'Belum ada data VPS/RDP dari menu renter.';
   const admin = process.env.ADMIN_USERNAME || process.env.ADMIN_CONTACT || 'Admin';
@@ -781,45 +813,94 @@ async function pickApi(bot, chatId, messageId, type, apiId, sessionManager) {
 
   const kb = regions.slice(0, 60).map(r => ([{
     text: `${r.slug} (${r.name})`,
-    callback_data: `renter_${type}_regionpick:${apiId}:${r.slug}`
+    callback_data: `renter_${type}_regionpick:${apiId}:${cbPack(r.slug)}`
   }]));
   kb.push([{ text: '« Kembali', callback_data: 'renter_menu' }]);
   return safeMessageEditor.editMessage(bot, chatId, messageId, `🌍 Pilih region ${type.toUpperCase()} terlebih dahulu:`, { reply_markup: { inline_keyboard: kb } });
 }
 
 async function pickRegionFirst(bot, chatId, messageId, type, apiId, region, sessionManager, page = 0) {
-  const token = await renterManager.getApiToken(chatId, apiId);
-  if (!token) return safeMessageEditor.editMessage(bot, chatId, messageId, '❌ API tidak aktif / tidak ditemukan.', { reply_markup: { inline_keyboard: [[{ text: '🔑 API Cloud', callback_data: 'renter_api_menu' }]] } });
+  const LOG = `[renter.pickRegionFirst chat=${chatId} type=${type} region=${region} page=${page} apiId=${apiId}]`;
+  console.log(`${LOG} enter`);
+  try {
+    const token = await renterManager.getApiToken(chatId, apiId);
+    if (!token) {
+      console.log(`${LOG} no token → early return`);
+      return safeMessageEditor.editMessage(bot, chatId, messageId, '❌ API tidak aktif / tidak ditemukan.', { reply_markup: { inline_keyboard: [[{ text: '🔑 API Cloud', callback_data: 'renter_api_menu' }]] } });
+    }
 
-  const session = sessionManager.getAdminSession(chatId) || {};
-  session.action = 'renter_create';
-  session.type = type;
-  session.apiId = Number(apiId);
-  session.region = region;
-  session.messageId = messageId;
-  sessionManager.setAdminSession(chatId, session);
+    const session = sessionManager.getAdminSession(chatId) || {};
+    session.action = 'renter_create';
+    session.type = type;
+    session.apiId = Number(apiId);
+    session.region = region;
+    session.messageId = messageId;
+    sessionManager.setAdminSession(chatId, session);
 
-  const sizes = await getSizesForRegion(token, region);
-  if (!sizes.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId,
-      `❌ Tidak ada size yang tersedia untuk region *${region}*.\n\nSilakan pilih region lain.`,
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '« Pilih Region Lain', callback_data: `renter_${type}_api:${apiId}` }], [{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
-    );
+    // Try cache first — dramatically speeds up pagination clicks & mengurangi
+    // panggilan API cloud provider (Linode/AWS/DO) berulang.
+    let sizes = getCachedSizes(chatId, region, apiId);
+    if (sizes) {
+      console.log(`${LOG} cache HIT (n=${sizes.length})`);
+    } else {
+      const t0 = Date.now();
+      sizes = await getSizesForRegion(token, region);
+      console.log(`${LOG} cache MISS, fetched in ${Date.now() - t0}ms (n=${sizes ? sizes.length : 0})`);
+      if (sizes && sizes.length) setCachedSizes(chatId, region, apiId, sizes);
+    }
+
+    if (!sizes || !sizes.length) {
+      return safeMessageEditor.editMessage(bot, chatId, messageId,
+        `❌ Tidak ada size yang tersedia untuk region *${region}*.\n\nSilakan pilih region lain.`,
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '« Pilih Region Lain', callback_data: `renter_${type}_api:${apiId}` }], [{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
+      );
+    }
+
+    const perPage = 12;
+    const totalPages = Math.max(1, Math.ceil(sizes.length / perPage));
+    const p = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+    console.log(`${LOG} rendering page ${p + 1}/${totalPages}`);
+    const regionTok = cbPack(region);
+    const kb = sizes.slice(p * perPage, (p + 1) * perPage).map(s => {
+      // Display: pakai `label` (nama plan asli, mis. "CLOUDNATIVE-4xCPU-8GB")
+      // kalau ada — supaya user tahu spec-nya. Callback pakai `slug` yang
+      // biasanya lebih pendek (mis. "up-4c-8g" untuk UpCloud) — supaya
+      // tidak overflow limit 64 byte callback_data Telegram.
+      const displayName = s.label || s.slug;
+      return [{
+        text: `${displayName} • ${Math.round(Number(s.memory || 0) / 1024)}GB RAM / ${s.vcpus} CPU`,
+        callback_data: `renter_${type}_sizepick:${apiId}:${regionTok}:${cbPack(s.slug)}`,
+      }];
+    });
+    const nav = [];
+    if (p > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `renter_${type}_sizepage:${apiId}:${regionTok}:${p - 1}` });
+    if (p < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `renter_${type}_sizepage:${apiId}:${regionTok}:${p + 1}` });
+    if (nav.length) kb.push(nav);
+    kb.push([{ text: '« Kembali ke Region', callback_data: `renter_${type}_api:${apiId}` }]);
+
+    // Include halaman ke-N di dalam text pesan supaya:
+    //  1. User tahu ini halaman berapa dari berapa
+    //  2. Text pesan BERUBAH tiap halaman → shouldUpdate() di safeMessageEditor
+    //     dijamin return true, sehingga edit selalu di-apply (defence in depth
+    //     kalau ada bug di JSON compare markup)
+    const bodyText =
+      `📦 Pilih spesifikasi ${type.toUpperCase()} yang tersedia di region *${region}*:\n\n` +
+      `_Halaman ${p + 1}/${totalPages} · Klik SALAH SATU spesifikasi di atas untuk lanjut._`;
+    const result = await safeMessageEditor.editMessage(bot, chatId, messageId, bodyText, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: kb },
+    });
+    console.log(`${LOG} editMessage → success=${result && result.success} skipped=${result && result.skipped}`);
+    return result;
+  } catch (err) {
+    console.error(`${LOG} ERROR:`, err && err.stack || err);
+    try {
+      await safeMessageEditor.editMessage(bot, chatId, messageId,
+        `❌ Gagal memuat daftar spesifikasi.\n\n\`${String(err && err.message || err).slice(0, 250)}\`\n\nSilakan coba lagi. Kalau masih gagal, cek koneksi & status API kamu di menu *🔑 API Cloud*.`,
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🔄 Coba lagi', callback_data: `renter_${type}_regionpick:${apiId}:${cbPack(region)}` }], [{ text: '🔑 Menu API', callback_data: 'renter_api_menu' }]] } }
+      );
+    } catch (_) { /* ignore secondary error */ }
   }
-
-  const perPage = 12;
-  const totalPages = Math.max(1, Math.ceil(sizes.length / perPage));
-  const p = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
-  const kb = sizes.slice(p * perPage, (p + 1) * perPage).map(s => ([{
-    text: `${s.slug} • ${Math.round(Number(s.memory || 0) / 1024)}GB RAM / ${s.vcpus} CPU`,
-    callback_data: `renter_${type}_sizepick:${apiId}:${region}:${s.slug}`
-  }]));
-  const nav = [];
-  if (p > 0) nav.push({ text: '⬅️ Prev', callback_data: `renter_${type}_sizepage:${apiId}:${region}:${p - 1}` });
-  if (p < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `renter_${type}_sizepage:${apiId}:${region}:${p + 1}` });
-  if (nav.length) kb.push(nav);
-  kb.push([{ text: '« Kembali ke Region', callback_data: `renter_${type}_api:${apiId}` }]);
-  return safeMessageEditor.editMessage(bot, chatId, messageId, `📦 Pilih spesifikasi ${type.toUpperCase()} yang tersedia di region *${region}*:`, { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
 }
 
 async function pickSize(bot, chatId, messageId, type, apiId, region, sizeSlug, sessionManager) {
@@ -830,7 +911,7 @@ async function pickSize(bot, chatId, messageId, type, apiId, region, sizeSlug, s
   if (!exists) {
     return safeMessageEditor.editMessage(bot, chatId, messageId,
       `❌ Size *${sizeSlug}* tidak tersedia di region *${region}*.\n\nSilakan pilih spesifikasi lain.`,
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '« Pilih Spesifikasi', callback_data: `renter_${type}_regionpick:${apiId}:${region}` }], [{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '« Pilih Spesifikasi', callback_data: `renter_${type}_regionpick:${apiId}:${cbPack(region)}` }], [{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
     );
   }
   const session = sessionManager.getAdminSession(chatId) || {};
@@ -844,14 +925,18 @@ async function pickSize(bot, chatId, messageId, type, apiId, region, sizeSlug, s
 
   if (type === 'vps') {
     const images = await getImages(token);
-    const kb = images.map(i => ([{ text: i.label, callback_data: `renter_vps_image:${apiId}:${region}:${sizeSlug}:${i.slug}` }]));
-    kb.push([{ text: '« Kembali ke Spesifikasi', callback_data: `renter_vps_regionpick:${apiId}:${region}` }]);
+    const regionTok = cbPack(region);
+    const sizeTok = cbPack(sizeSlug);
+    const kb = images.map(i => ([{ text: i.label, callback_data: `renter_vps_image:${apiId}:${regionTok}:${sizeTok}:${cbPack(i.slug)}` }]));
+    kb.push([{ text: '« Kembali ke Spesifikasi', callback_data: `renter_vps_regionpick:${apiId}:${regionTok}` }]);
     return safeMessageEditor.editMessage(bot, chatId, messageId, '💿 Pilih OS VPS:', { reply_markup: { inline_keyboard: kb } });
   }
 
   const wins = getWindowsList();
-  const kb = wins.map((w, idx) => ([{ text: w.name, callback_data: `renter_rdp_win:${apiId}:${region}:${sizeSlug}:${idx}` }]));
-  kb.push([{ text: '« Kembali ke Spesifikasi', callback_data: `renter_rdp_regionpick:${apiId}:${region}` }]);
+  const regionTok = cbPack(region);
+  const sizeTok = cbPack(sizeSlug);
+  const kb = wins.map((w, idx) => ([{ text: w.name, callback_data: `renter_rdp_win:${apiId}:${regionTok}:${sizeTok}:${idx}` }]));
+  kb.push([{ text: '« Kembali ke Spesifikasi', callback_data: `renter_rdp_regionpick:${apiId}:${regionTok}` }]);
   return safeMessageEditor.editMessage(bot, chatId, messageId, '🪟 Pilih versi Windows:', { reply_markup: { inline_keyboard: kb } });
 }
 
@@ -865,7 +950,8 @@ async function createVps(bot, chatId, messageId, apiId, sizeSlug, region, image)
   const password = genAlphaNum(12);
   const cloudInit = rootCloudInit(password);
   await safeMessageEditor.editMessage(bot, chatId, messageId, `⏳ VPS renter sedang dibuat menggunakan API ${providerName(token)} kamu...`, { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } });
-  const { dropletId, error } = await createDroplet(token, `renter-vps-${chatId}-${genAlphaNum(6).toLowerCase()}`, region, sizeSlug, image, cloudInit);
+  const createRes = await createDroplet(token, `renter-vps-${chatId}-${genAlphaNum(6).toLowerCase()}`, region, sizeSlug, image, cloudInit);
+  const { dropletId, error, sshPrivateKey } = createRes;
   if (!dropletId) return bot.sendMessage(chatId, `❌ Gagal membuat VPS\nReason: ${error}`);
   const ip = await waitPublicIp(token, dropletId, 20, 10000, region);
   if (!ip) {
@@ -873,7 +959,24 @@ async function createVps(bot, chatId, messageId, apiId, sizeSlug, region, image)
     return bot.sendMessage(chatId, '⚠️ VPS dibuat tapi IP belum tersedia. Droplet sudah dicoba dihapus. Silakan coba lagi.');
   }
   await renterManager.saveInstance({ userId: chatId, type: 'vps', dropletId, ip, sizeSlug, region, image, rootPassword: password, apiId });
-  return sendRenterVpsReady(bot, chatId, { ip, password, image, region, sizeSlug });
+
+  // UpCloud: connect via SSH KEY (pola AWS) lalu AKTIF set root password +
+  // enable password auth. Template UpCloud = key-only, jadi password harus
+  // di-enable setelah masuk pakai key (bukan nunggu cloud-init yang racy).
+  if (isUpCloudToken(token) && sshPrivateKey) {
+    await safeMessageEditor.editMessage(bot, chatId, messageId,
+      `⏳ VPS UpCloud dibuat, IP: ${ip}\n\nMengaktifkan akses root+password (2-4 menit)...`,
+      { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
+    ).catch(() => {});
+    const { upcloudProvisionRootPassword } = require('../utils/upcloudApi');
+    const ok = await upcloudProvisionRootPassword(ip, sshPrivateKey, password, {
+      maxWaitMs: 6 * 60 * 1000,
+      onLog: (m) => console.log(`[RENTER-VPS ${ip}] ${m}`),
+    });
+    if (!ok) console.log(`[RENTER-VPS ${ip}] provision root password TIMEOUT`);
+  }
+
+  return sendRenterVpsReady(bot, chatId, { ip, password, image, region, sizeSlug, provider: providerName(token) });
 }
 
 async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winIndex) {
@@ -890,20 +993,28 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
     `⏳ VPS untuk RDP renter sedang dibuat menggunakan API ${providerName(token)} kamu...\n\n📦 Size: ${sizeSlug}\n🌍 Region: ${region}\n💿 Windows: ${selectedOS.name}`,
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
   );
-  const baseImage = isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : 'ubuntu-22-04-x64');
+  const baseImage = isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
   const createSizeSlug = isAwsToken(token) ? normalizeAwsRdpSize(sizeSlug) : sizeSlug;
-  const { dropletId, error } = await createDroplet(token, hostname, region, createSizeSlug, baseImage, cloudInit);
+  const createRes = await createDroplet(token, hostname, region, createSizeSlug, baseImage, cloudInit);
+  const { dropletId, error, sshPrivateKey, sshUsername } = createRes;
   if (!dropletId) return bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
   const ip = await waitPublicIp(token, dropletId, 20, 10000, region);
   if (!ip) {
     await deleteDroplet(token, dropletId, region);
     return bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
   }
-  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId });
+  // Port RDP per-provider: UpCloud=3389 (lolos firewall default), lainnya=4443.
+  const rdpPort = rdpPortForToken(token);
+  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId, rdpPort });
   await safeMessageEditor.editMessage(bot, chatId, messageId,
-    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: 4443\n\n⏰ Estimasi maksimal 15 menit. Kamu akan dapat notifikasi saat RDP siap.`,
+    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
   );
+
+  // Catatan: notif firewall UpCloud DIHAPUS. Port RDP UpCloud = 3389 yang
+  // sudah di-accept firewall default UpCloud, jadi tidak perlu buka apa-apa
+  // dan tidak perlu warning yang menyesatkan.
+
   (async () => {
     try {
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
@@ -911,17 +1022,22 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
         await bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
         return;
       }
-      const installProvider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean');
-      const installPromise = installDedicatedRDP(ip, 'root', rootPass, { osVersion: selectedOS.version, password: rdpPass, provider: installProvider }, (logMessage) => console.log(`[RENTER ${ip}] ${logMessage}`));
+      const installProvider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : (isUpCloudToken(token) ? 'upcloud' : 'digitalocean'));
+      // UpCloud pakai SSH key auth (docs: satu-satunya method untuk cloud-init template).
+      const upcloudKey = (isUpCloudToken(token) && sshPrivateKey) ? sshPrivateKey : null;
+      const sshUser = upcloudKey ? (sshUsername || 'root') : 'root';
+      const installCfg = { osVersion: selectedOS.version, password: rdpPass, provider: installProvider, rdpPort };
+      if (upcloudKey) { installCfg.privateKey = upcloudKey; installCfg.useSudo = sshUser !== 'root'; }
+      const installPromise = installDedicatedRDP(ip, sshUser, upcloudKey ? null : rootPass, installCfg, (logMessage) => console.log(`[RENTER ${ip}] ${logMessage}`));
       scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip);
       await installPromise;
-      const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);
+      const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, rdpPort);
       const rdpResult = await monitor.waitForRDPReady(rdpPasswordUtil.RDP_MONITOR_TIMEOUT_MS, (statusMessage) => console.log(`[RENTER ${ip}] ${statusMessage}`));
       try { monitor.disconnect(); } catch (_) {}
       if (!rdpResult || !(rdpResult.success && rdpResult.rdpReady)) {
         await sendRenterRdpReadyMessages(bot, chatId, messageId, {
           ip, hostname, rdpPass, windowsName: selectedOS.name, region, sizeSlug: createSizeSlug,
-          responseTime: 'N/A', totalTime: rdpResult?.totalTime || '15', ready: false
+          responseTime: 'N/A', totalTime: rdpResult?.totalTime || '15', ready: false, port: rdpPort
         });
         return;
       }
@@ -934,7 +1050,8 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
         sizeSlug: createSizeSlug,
         responseTime: rdpResult.responseTime || 'N/A',
         totalTime: rdpResult.totalTime || 'N/A',
-        ready: !!(rdpResult.success && rdpResult.rdpReady)
+        ready: !!(rdpResult.success && rdpResult.rdpReady),
+        port: rdpPort
       });
     } catch (e) {
       console.error('Renter RDP install error:', e);
@@ -1031,7 +1148,7 @@ async function viewService(bot, chatId, messageId, instanceId) {
   const x = await renterManager.getInstance(chatId, instanceId);
   if (!x) return safeMessageEditor.editMessage(bot, chatId, messageId, '❌ Data tidak ditemukan.', { reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'renter_services' }]] } });
   const type = x.type === 'rdp' ? 'RDP' : 'VPS';
-  const server = x.type === 'rdp' && x.ip ? x.ip + ':4443' : (x.ip || '-');
+  const server = x.type === 'rdp' && x.ip ? x.ip + ':' + (x.rdp_port || 4443) : (x.ip || '-');
   let text = '📄 *Detail ' + type + ' Renter*\n\n' +
     '🆔 ID: *' + x.id + '*\n' +
     '🌐 Server: *' + server + '*\n' +
@@ -1096,7 +1213,7 @@ async function showRenterRdpPassword(bot, chatId, messageId, instanceId) {
       ] } }
     );
   }
-  const ipText = x.ip ? (x.ip + ':4443') : '-';
+  const ipText = x.ip ? (x.ip + ':' + (x.rdp_port || 4443)) : '-';
   const bt = '`';
   const text =
     '🔑 *Password RDP Renter*\n\n' +
@@ -1109,7 +1226,7 @@ async function showRenterRdpPassword(bot, chatId, messageId, instanceId) {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📋 Copy Password', callback_data: 'copy_pass_' + pass }],
-        [{ text: '📋 Copy Server', callback_data: 'copy_server_' + (x.ip || '') + ':4443' }],
+        [{ text: '📋 Copy Server', callback_data: 'copy_server_' + (x.ip || '') + ':' + (x.rdp_port || 4443) }],
         [{ text: '🙈 Sembunyikan', callback_data: 'renter_srv_view:' + x.id }]
       ]
     }
@@ -1174,13 +1291,15 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
     const ip = await waitPublicIp(token, result.dropletId, 20, 10000, x.region || defaultRegion);
     if (!ip) throw new Error('IP droplet baru belum tersedia.');
     if (x.droplet_id) { try { await deleteDroplet(token, x.droplet_id, x.region || null); } catch (_) {} }
-    await renterManager.updateInstanceDroplet(chatId, instanceId, { dropletId: result.dropletId, ip, region: x.region, image: winVersion ? 'rdp:' + winVersion : image, rootPassword: rootPass, windowsVersion: winVersion, apiId: x.api_id });
-    return { ip, rootPass, dropletId: result.dropletId };
+    await renterManager.updateInstanceDroplet(chatId, instanceId, { dropletId: result.dropletId, ip, region: x.region, image: winVersion ? 'rdp:' + winVersion : image, rootPassword: rootPass, windowsVersion: winVersion, apiId: x.api_id, rdpPort: rdpPortForToken(token) });
+    // sshPrivateKey/sshUsername ikut kembali biar caller bisa pass ke installer
+    // (UpCloud pakai SSH key auth, docs).
+    return { ip, rootPass, dropletId: result.dropletId, sshPrivateKey: result.sshPrivateKey || null, sshUsername: result.sshUsername || null };
   };
 
   if (action === 'rebuild_vps') {
     try {
-      const image = x.image && !String(x.image).startsWith('rdp:') ? x.image : (isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : 'ubuntu-22-04-x64'));
+      const image = x.image && !String(x.image).startsWith('rdp:') ? x.image : (isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64')));
       const r = await recreate(image, 'vps');
       return sendRenterVpsReady(bot, chatId, { ip: r.ip, password: r.rootPass, image, region: x.region || '-', sizeSlug: x.size_slug || '-' });
     } catch (e) {
@@ -1193,7 +1312,7 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
       const wins = getWindowsList();
       const selectedOS = wins[Number(winIndex)] || wins[0];
       const rdpPass = genWindowsPassword();
-      const r = await recreate(isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : 'ubuntu-22-04-x64'), 'rdp', selectedOS.version);
+      const r = await recreate(isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64')), 'rdp', selectedOS.version);
 
       // ─── BUGFIX (SSH wait before install): parity with create-RDP ────
       // Previously we launched installDedicatedRDP + Linode direct-disk
@@ -1212,7 +1331,8 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
         );
       }
 
-      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: 4443\n\nEstimasi maksimal 15 menit.');
+      const rdpPort = rdpPortForToken(token);
+      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: ' + rdpPort + '\n\nEstimasi 30-40 menit.');
 
       // BUGFIX (save password BEFORE install): previously saved AFTER
       // `await installPromise`. If installPromise rejected or the user
@@ -1222,17 +1342,22 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
       // the DB is the source of truth from t=0.
       await renterManager.updateInstancePassword(chatId, instanceId, rdpPass, 'rdp');
 
-      const installProvider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean');
-      const installPromise = installDedicatedRDP(r.ip, 'root', r.rootPass, { osVersion: selectedOS.version, password: rdpPass, provider: installProvider }, (logMessage) => console.log('[RENTER REBUILD ' + r.ip + '] ' + logMessage));
+      const installProvider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : (isUpCloudToken(token) ? 'upcloud' : 'digitalocean'));
+      // UpCloud rebuild: pakai fresh SSH key dari createDroplet (recreate).
+      const rbUpcloudKey = (isUpCloudToken(token) && r.sshPrivateKey) ? r.sshPrivateKey : null;
+      const rbSshUser = rbUpcloudKey ? (r.sshUsername || 'root') : 'root';
+      const rbInstallCfg = { osVersion: selectedOS.version, password: rdpPass, provider: installProvider, rdpPort };
+      if (rbUpcloudKey) { rbInstallCfg.privateKey = rbUpcloudKey; rbInstallCfg.useSudo = rbSshUser !== 'root'; }
+      const installPromise = installDedicatedRDP(r.ip, rbSshUser, rbUpcloudKey ? null : r.rootPass, rbInstallCfg, (logMessage) => console.log('[RENTER REBUILD ' + r.ip + '] ' + logMessage));
       scheduleLinodeDirectDiskIfNeeded(token, r.dropletId, r.ip);
       await installPromise;
-      const monitor = new RDPMonitor(r.ip, 'root', r.rootPass, rdpPass, 4443);
+      const monitor = new RDPMonitor(r.ip, 'root', r.rootPass, rdpPass, rdpPort);
       const rdpResult = await monitor.waitForRDPReady(rdpPasswordUtil.RDP_MONITOR_TIMEOUT_MS, (statusMessage) => console.log('[RENTER REBUILD ' + r.ip + '] ' + statusMessage));
       try { monitor.disconnect(); } catch (_) {}
       if (!rdpResult || !(rdpResult.success && rdpResult.rdpReady)) {
         return sendRenterRdpReadyMessages(bot, chatId, null, {
           ip: r.ip, hostname: 'renter-rdp-' + chatId, rdpPass, windowsName: selectedOS.name,
-          region: x.region || '-', sizeSlug: x.size_slug || '-', responseTime: 'N/A', totalTime: rdpResult?.totalTime || '15', ready: false
+          region: x.region || '-', sizeSlug: x.size_slug || '-', responseTime: 'N/A', totalTime: rdpResult?.totalTime || '15', ready: false, port: rdpPort
         });
       }
       return sendRenterRdpReadyMessages(bot, chatId, null, {
@@ -1244,7 +1369,8 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
         sizeSlug: x.size_slug || '-',
         responseTime: rdpResult.responseTime || 'N/A',
         totalTime: rdpResult.totalTime || 'N/A',
-        ready: !!(rdpResult.success && rdpResult.rdpReady)
+        ready: !!(rdpResult.success && rdpResult.rdpReady),
+        port: rdpPort
       });
     } catch (e) {
       return bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
@@ -1383,58 +1509,9 @@ async function processAdminRemove(bot, msg, sessionManager) {
   await bot.sendMessage(chatId, `✅ Penyewa ${uid} berhasil dihapus.`);
 }
 
-// ============================================================
-// "Install RDP pakai API cloud sendiri" — entry TERBUKA (tanpa gate renter).
-// Dipakai oleh menu Install RDP (dedicatedRdpHandler) sebagai alternatif dari
-// input kredensial VPS manual. Sengaja TIDAK memanggil requireRenter: fungsi
-// tengah rantai (pickApi/pickRegionFirst/pickSize/createRdp) memang tidak
-// ter-gate dan hanya butuh token dari renterManager.getApiToken, sehingga
-// callback renter_rdp_api/regionpick/sizepick/win yang sudah ada bisa dipakai.
-// ============================================================
-async function startOpenApiRdp(bot, chatId, messageId, sessionManager) {
-  const apis = await renterManager.listApis(chatId, true);
-  if (!apis.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId,
-      '🔑 *Install RDP via API Cloud Sendiri*\n\n' +
-      'Kamu belum punya API cloud tersimpan. Tambahkan token API dari provider kamu ' +
-      '(VPS akan dibuat & RDP diinstall otomatis di akun cloud milikmu sendiri):',
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-        [{ text: '➕ API DigitalOcean', callback_data: 'open_api_add:digitalocean' }],
-        [{ text: '➕ API Linode', callback_data: 'open_api_add:linode' }],
-        [{ text: '➕ API AWS', callback_data: 'open_api_add:aws' }],
-        [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
-      ] } }
-    );
-  }
-  // Reuse callback renter_rdp_api:<apiId> yang sudah ter-route (pickApi non-gated).
-  const kb = apis.map(a => ([{ text: apiLabel(a), callback_data: `renter_rdp_api:${a.id}` }]));
-  kb.push([{ text: '➕ Tambah API lain', callback_data: 'open_api_add:digitalocean' }]);
-  kb.push([{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]);
-  return safeMessageEditor.editMessage(bot, chatId, messageId,
-    '🔑 *Install RDP via API Cloud Sendiri*\n\nPilih API cloud yang akan dipakai untuk membuat VPS + install RDP:',
-    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
-}
-
-async function promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider = 'digitalocean') {
-  const p = String(provider || 'digitalocean').toLowerCase();
-  const label = p === 'aws' ? 'AWS' : (p === 'linode' ? 'Linode' : 'DigitalOcean');
-  // returnTo dipakai processAddApi untuk menawarkan tombol lanjut setelah sukses.
-  sessionManager.setAdminSession(chatId, { action: 'renter_add_api', provider: p, messageId, returnTo: 'open_api_rdp' });
-  const extra = p === 'aws'
-    ? '\n\nFormat AWS:\n`ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION`\nContoh: `AKIAxxxx|secretxxxx|us-east-1`'
-    : '';
-  return safeMessageEditor.editMessage(bot, chatId, messageId,
-    `🔑 Masukkan token/API ${label} kamu:${extra}\n\nToken akan dihapus dari chat setelah dikirim.`, {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'install_src_api' }]] }
-  });
-}
-
 module.exports = {
   showRentOffer,
   startRentPurchase,
-  startOpenApiRdp,
-  promptOpenApiAdd,
   refreshRentPayment,
   cancelRentPayment,
   showStartChoice,

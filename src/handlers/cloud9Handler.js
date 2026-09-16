@@ -3,7 +3,7 @@ const { isAdmin, getBalance, deductBalance, addBalance } = require('../utils/use
 const safeMessageEditor = require('../utils/safeMessageEdit');
 const cloud9Manager = require('../utils/cloud9Manager');
 const adminSettings = require('../utils/adminSettings');
-const { getSizes, createDroplet, waitPublicIp, deleteDroplet } = require('../utils/doApi');
+const { getSizes, createDroplet, waitPublicIp, deleteDroplet, isUpCloudToken } = require('../utils/doApi');
 const vpsManager = require('../utils/vpsManager');
 const { installCloud9 } = require('../utils/cloud9Installer');
 const { notifyCloud9OrderSuccess, notifyCloud9Expired, notifyOrderTestimonial } = require('../utils/orderNotifier');
@@ -250,7 +250,10 @@ async function orderCloud9(bot, chatId, messageId, productId, durationDays = 30)
 
     await bot.sendMessage(chatId, `✅ VPS sedang dibuat: ${ip}\n⏳ Menunggu SSH dan install Cloud9...`);
 
-    const result = await installCloud9(ip, 'root', rootPassword, { sshMaxWaitMs: 12 * 60 * 1000 }, (line) => {
+    // Cloud9 UpCloud pakai port 8880 (open di firewall default UpCloud),
+    // provider lain 8000.
+    const c9Port = isUpCloudToken(token) ? 8880 : 8000;
+    const result = await installCloud9(ip, 'root', rootPassword, { sshMaxWaitMs: 12 * 60 * 1000, cloud9Port: c9Port }, (line) => {
       const s = String(line || '');
       if (/SUCCESS|PORT=|C9_USER=|C9_PASS=|Failed|Error|❌|✅/.test(s)) console.log(`[CLOUD9 ORDER ${ip}] ${s}`);
     });
@@ -321,7 +324,7 @@ async function orderCloud9(bot, chatId, messageId, productId, durationDays = 30)
 async function showAdminMenu(bot, chatId, messageId) {
   if (!isAdmin(chatId)) return;
   const kb = [
-    [{ text: '➕ Tambah Spesifikasi Cloud9 AWS', callback_data: 'cloud9_admin_add' }],
+    [{ text: '➕ Tambah Spesifikasi Cloud9 (AWS / UpCloud)', callback_data: 'cloud9_admin_add' }],
     [{ text: '📋 List Spesifikasi Cloud9', callback_data: 'cloud9_admin_list' }],
     [{ text: '💲 Ubah Harga Cloud9', callback_data: 'cloud9_admin_price' }],
     [{ text: '🔥 Hapus Cloud9 Aktif', callback_data: 'cloud9_admin_delete_instance' }],
@@ -339,7 +342,7 @@ async function pickAwsApi(bot, chatId, messageId) {
   if (!isAdmin(chatId)) return;
   const apis = await cloud9Manager.listAwsApis();
   if (!apis.length) return bot.sendMessage(chatId, '❌ Belum ada API AWS aktif. Tambahkan API AWS dulu.');
-  const kb = apis.map(a => ([{ text: a.email ? `${a.email} - API#${a.id}` : `AWS API#${a.id}`, callback_data: `cloud9_add_api:${a.id}` }]));
+  const kb = apis.map(a => ([{ text: a.email ? `${a.email} - API#${a.id}` : `${(a.provider || 'AWS')} API#${a.id}`, callback_data: `cloud9_add_api:${a.id}` }]));
   kb.push([{ text: '« Kembali', callback_data: 'cloud9_admin' }]);
   return safeMessageEditor.editMessage(bot, chatId, messageId, 'Pilih API AWS untuk tambah spesifikasi Cloud9:', { reply_markup: { inline_keyboard: kb } });
 }
@@ -362,9 +365,9 @@ async function pickSize(bot, chatId, messageId, apiId, page = 0) {
   }]));
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: `cloud9_add_sizepage:${apiId}:${safePage - 1}` });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `cloud9_add_sizepage:${apiId}:${safePage - 1}` });
   nav.push({ text: `${safePage + 1}/${totalPages}`, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `cloud9_add_sizepage:${apiId}:${safePage + 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `cloud9_add_sizepage:${apiId}:${safePage + 1}` });
   kb.push(nav);
   kb.push([{ text: '« Kembali', callback_data: 'cloud9_admin_add' }]);
 

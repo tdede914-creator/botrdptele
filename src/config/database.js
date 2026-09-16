@@ -373,6 +373,7 @@ async function initDatabase() {
             const hasNotified = Array.isArray(cols) && cols.some(c => c.name === 'last_notified_at');
             const hasDeletedAt = Array.isArray(cols) && cols.some(c => c.name === 'deleted_at');
             const hasOriginApi = Array.isArray(cols) && cols.some(c => c.name === 'origin_api_id');
+            const hasRdpPort = Array.isArray(cols) && cols.some(c => c.name === 'rdp_port');
             if (!hasExpires) await dbAsync.exec('ALTER TABLE vps_instances ADD COLUMN expires_at INTEGER NULL');
             if (!hasDuration) await dbAsync.exec('ALTER TABLE vps_instances ADD COLUMN duration_days INTEGER NULL');
             if (!hasNotified) await dbAsync.exec('ALTER TABLE vps_instances ADD COLUMN last_notified_at INTEGER NULL');
@@ -381,6 +382,9 @@ async function initDatabase() {
                 await dbAsync.exec('ALTER TABLE vps_instances ADD COLUMN origin_api_id INTEGER NULL');
                 await dbAsync.exec('UPDATE vps_instances SET origin_api_id = api_id WHERE origin_api_id IS NULL');
             }
+            // rdp_port: port RDP per-instance (UpCloud=3389, lainnya=4443).
+            // Instance lama tanpa kolom ini di-treat 4443 di display (fallback).
+            if (!hasRdpPort) await dbAsync.exec('ALTER TABLE vps_instances ADD COLUMN rdp_port INTEGER NULL');
         } catch (e) {
             console.warn('⚠️  Could not run vps_instances migration:', e?.message || e);
         }

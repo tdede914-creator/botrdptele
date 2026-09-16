@@ -12,9 +12,17 @@
  *     wording.
  */
 
-// 25 minutes. Linode Windows install in non-SGP regions frequently
-// finishes at 15-22 min; give it headroom before declaring failure.
-const RDP_MONITOR_TIMEOUT_MS = 25 * 60 * 1000;
+// 40 minutes. Timeline setelah bot SSH selesai run tele.sh:
+//   - tele.sh setup GRUB entry + reboot (near instant)
+//   - Alpine mini-installer boot + download Windows image (~5GB): 5-12 min
+//   - Alpine DD image to disk: ~1 min
+//   - Alpine reboot to Windows (drives, sysprep, first boot): 5-15 min
+//   - Windows fully boot + RDP service listen: total ~15-30 min post-reboot
+// UpCloud specifically slower karena template pertama kali download bisa
+// susah reach mirror; bumped dari 25 -> 40 min supaya user tidak keburu
+// nyerah / bot false negative. Kalau setelah 40 min port 4443 masih timeout,
+// itu memang install gagal (biasanya UEFI/BIOS mismatch atau image corrupt).
+const RDP_MONITOR_TIMEOUT_MS = 40 * 60 * 1000;
 
 /**
  * Windows RDP password requirements (RDP + Windows local account):
@@ -58,10 +66,10 @@ function validateWindowsPassword(pass) {
 function buildTimeoutCardMarkdown({ ip, port = 4443, hostname, osName, region, password, elapsedMin }) {
   const bt = '`';
   return (
-    `⚠️ *Monitoring RDP timeout setelah ${elapsedMin || 25} menit*\n\n` +
+    `⚠️ *Monitoring RDP timeout setelah ${elapsedMin || 40} menit*\n\n` +
     `Ini *bukan berarti install gagal*. Kadang RDP baru siap sedikit lebih lama.\n\n` +
     `📋 *Coba dulu langkah ini SEBELUM rebuild:*\n` +
-    `1️⃣ Tunggu 2-5 menit\n` +
+    `1️⃣ Tunggu 2-5 menit lagi\n` +
     `2️⃣ Buka Remote Desktop\n` +
     `3️⃣ Isi: ${bt}${ip}:${port}${bt}\n` +
     `4️⃣ Username: ${bt}administrator${bt}\n` +
@@ -69,7 +77,10 @@ function buildTimeoutCardMarkdown({ ip, port = 4443, hostname, osName, region, p
     (hostname ? `🏷️ Hostname: ${bt}${hostname}${bt}\n` : '') +
     (region ? `📍 Region: ${bt}${region}${bt}\n` : '') +
     (osName ? `🪟 Windows: ${bt}${osName}${bt}\n` : '') +
-    `\n💡 Kalau setelah 10 menit masih *belum bisa connect*, baru rebuild di menu VPS&RDP Saya.`
+    `\n🔍 *Kalau masih timeout:* buka console VPS di panel cloud provider ` +
+    `(UpCloud: hub.upcloud.com, DO: cloud.digitalocean.com, AWS: EC2 Instance Connect) ` +
+    `untuk cek status Windows install / boot.\n\n` +
+    `💡 Kalau setelah 10 menit masih *belum bisa connect*, baru rebuild di menu VPS&RDP Saya.`
   );
 }
 

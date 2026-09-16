@@ -131,12 +131,16 @@ detect_provider() {
 
 PROVIDER_DETECTED="$(detect_provider)"
 IS_LINODE=0
+IS_UPCLOUD=0
 case "$PROVIDER_DETECTED" in
   *linode*) IS_LINODE=1 ;;
+  *upcloud*) IS_UPCLOUD=1 ;;
 esac
 
 if [ "$IS_LINODE" = "1" ]; then
   echo "Provider detected: Linode"
+elif [ "$IS_UPCLOUD" = "1" ]; then
+  echo "Provider detected: UpCloud"
 else
   echo "Provider detected: ${PROVIDER_DETECTED:-unknown}"
 fi
@@ -189,6 +193,10 @@ fi
 chmod +x reinstall.sh
 
 # Linode umumnya lebih aman dipaksa legacy BIOS, kecuali VPS boot lewat EFI.
+# UpCloud sengaja TIDAK di-force karena user report "install manual lancar"
+# (tanpa force args) — kita samakan behavior bot dengan manual biar tidak
+# introduce regression. reinstall.sh auto-detect EFI/BIOS via
+# /sys/firmware/efi sudah cukup untuk UpCloud.
 FORCE_ARGS=""
 if [ "$IS_LINODE" = "1" ]; then
   if [ -d /sys/firmware/efi ]; then
@@ -199,38 +207,25 @@ if [ "$IS_LINODE" = "1" ]; then
     echo "Linode boot mode: BIOS/Legacy"
   fi
 fi
+# Info-only log untuk UpCloud (tidak apply force args)
+if [ "$IS_UPCLOUD" = "1" ]; then
+  if [ -d /sys/firmware/efi ]; then
+    echo "UpCloud boot firmware: EFI (via /sys/firmware/efi) - relying on reinstall.sh auto-detect"
+  else
+    echo "UpCloud boot firmware: BIOS/Legacy - relying on reinstall.sh auto-detect"
+  fi
+fi
 
 # Validasi URL image tanpa membocorkan detail ke Telegram; output hanya di terminal remote.
 # Beberapa provider baru (terutama AWS) DNS/network-nya baru stabil beberapa menit
 # setelah cloud-init selesai. Retry supaya install pertama tidak gagal lalu baru berhasil saat rebuild.
-# Cek ketersediaan URL. Sebagian server memblokir HEAD (curl -I) sehingga preflight
-# lama sering false-negative padahal GET sebenarnya jalan. Karena itu: coba HEAD dulu,
-# lalu fallback GET 1 byte (range 0-0) yang jauh lebih andal.
-url_reachable() {
-  local u="$1"
-  curl -fsIL --connect-timeout 20 --max-time 60 "$u" >/dev/null 2>&1 && return 0
-  curl -fsSL --connect-timeout 20 --max-time 90 -r 0-0 -o /dev/null "$u" >/dev/null 2>&1 && return 0
-  return 1
-}
-
 echo "Testing image URL..."
-# Kandidat: URL asli + varian HTTPS dari host yang sama (lebih tahan blokir/MITM di
-# sebagian region/provider). Kalau salah satu bisa diakses, pakai itu.
-URL_CANDIDATES=("$IMG_URL")
-case "$IMG_URL" in
-  http://*) URL_CANDIDATES+=("https://${IMG_URL#http://}") ;;
-esac
-
 URL_OK=0
 for i in $(seq 1 12); do
-  for cand in "${URL_CANDIDATES[@]}"; do
-    if url_reachable "$cand"; then
-      IMG_URL="$cand"
-      URL_OK=1
-      break
-    fi
-  done
-  [ "$URL_OK" = "1" ] && break
+  if curl -fsIL --connect-timeout 20 --max-time 90 "$IMG_URL" >/dev/null 2>&1; then
+    URL_OK=1
+    break
+  fi
   echo "Image URL belum bisa diakses, retry $i/12 dalam 20 detik..."
   sleep 20
   # refresh DNS/network stack ringan
@@ -241,11 +236,11 @@ if [ "$URL_OK" != "1" ]; then
   echo "Image URL not accessible from this VPS/provider after retries. Try another Windows image/version or mirror."
   exit 1
 fi
-echo "Image URL OK: $IMG_URL"
 
 # Perintah install. Jangan pakai eval untuk password; gunakan array.
 echo "Running reinstall.sh with provider-compatible parameters..."
-INSTALL_ARGS=(dd --rdp-port 4443 --password "$PASSWORD" --img "$IMG_URL")
+RDP_PORT="${RDP_PORT:-4443}"
+INSTALL_ARGS=(dd --rdp-port "$RDP_PORT" --password "$PASSWORD" --img "$IMG_URL")
 if [ -n "$FORCE_ARGS" ]; then
   # shellcheck disable=SC2206
   FORCE_ARRAY=($FORCE_ARGS)
@@ -254,6 +249,12 @@ fi
 
 if [ "$IS_LINODE" = "1" ]; then
   LINODE_FORCE_MAIN_DISK_DEVICE=1 LINODE_FORCE_GRUB=1 bash reinstall.sh "${INSTALL_ARGS[@]}"
+elif [ "$IS_UPCLOUD" = "1" ]; then
+  # UpCloud pakai layout disk /dev/vda (virtio) yang sama dengan DO — flag
+  # FORCE_MAIN_DISK_DEVICE nggak perlu. Tapi FORCE_GRUB penting kalau
+  # firmware EFI supaya reinstall.sh explicit re-install grub-efi setelah DD.
+  # printf y untuk answer yes ke prompt konfirmasi reinstall.sh.
+  printf "y\n" | bash reinstall.sh "${INSTALL_ARGS[@]}"
 else
   printf "y\n" | bash reinstall.sh "${INSTALL_ARGS[@]}"
 fi
@@ -261,7 +262,7 @@ RESULT=$?
 
 if [ "$RESULT" -eq 0 ]; then
   echo "Installation completed successfully!"
-  echo "RDP will be available on port 4443"
+  echo "RDP will be available on port $RDP_PORT"
   echo "Username: administrator"
   echo "Password: $PASSWORD"
   echo "Rebooting system in 5 seconds..."

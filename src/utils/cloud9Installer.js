@@ -81,7 +81,10 @@ function runOnce(host, username, password, options, onLog) {
         });
         ws.on('close', () => {
           log('✅ Script Cloud9 uploaded. Running installer...');
-          const cmd = `sed -i 's/\\r$//' ${remotePath}; chmod +x ${remotePath}; bash ${remotePath}`;
+          // Port Cloud9 bisa di-set per-provider via options.cloud9Port
+          // (UpCloud=8880, lainnya=8000). Diteruskan ke x9.sh via env C9_PORT.
+          const c9Port = Number(options.cloud9Port) > 0 ? Number(options.cloud9Port) : 8000;
+          const cmd = `sed -i 's/\\r$//' ${remotePath}; chmod +x ${remotePath}; C9_PORT=${c9Port} bash ${remotePath}`;
           conn.exec(cmd, { pty: true }, (err, stream) => {
             if (err) {
               clearTimeout(timer);
@@ -104,7 +107,7 @@ function runOnce(host, username, password, options, onLog) {
             stream.on('close', (code) => {
               clearTimeout(timer);
               const success = /(^|\n)SUCCESS(\n|$)/.test(output);
-              const port = (output.match(/PORT=([^\n\r]+)/) || [])[1] || '8000';
+              const port = (output.match(/PORT=([^\n\r]+)/) || [])[1] || String(c9Port);
               const c9User = (output.match(/C9_USER=([^\n\r]+)/) || [])[1] || 'Admin';
               const c9Pass = (output.match(/C9_PASS=([^\n\r]+)/) || [])[1] || 'Donn0143';
 

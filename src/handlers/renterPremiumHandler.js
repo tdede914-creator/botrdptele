@@ -14,10 +14,11 @@ const safeMessageEditor = require('../utils/safeMessageEdit');
 const renterManager = require('../utils/renterManager');
 const {
   getSizesForRegion, getRegions, createDroplet, waitPublicIp, deleteDroplet,
-  isAwsToken, isLinodeToken, providerName
+  isAwsToken, isLinodeToken, isUpCloudToken, providerName
 } = require('../utils/doApi');
 const { installCloud9 } = require('../utils/cloud9Installer');
 const { installFastpanel } = require('../utils/fastpanelInstaller');
+const { pack: cbPack } = require('../utils/cbToken');
 
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                   */
@@ -63,6 +64,7 @@ runcmd:
 function ubuntuImageForToken(token) {
   if (isAwsToken(token)) return 'aws:ubuntu22.04';
   if (isLinodeToken(token)) return 'linode/ubuntu22.04';
+  if (isUpCloudToken(token)) return 'upcloud/ubuntu22.04';
   return 'ubuntu-22-04-x64';
 }
 
@@ -253,7 +255,7 @@ async function pickRegion(bot, chatId, messageId, product, apiId, sessionManager
   const productLabel = product === 'c9' ? 'Cloud9' : 'Fastpanel';
   const kb = regions.slice(0, 60).map(r => ([{
     text: `${r.slug} (${r.name})`,
-    callback_data: `renter_${product}_regionpick:${apiId}:${r.slug}`
+    callback_data: `renter_${product}_regionpick:${apiId}:${cbPack(r.slug)}`
   }]));
   kb.push([{ text: '« Kembali', callback_data: 'renter_menu' }]);
 
@@ -292,14 +294,15 @@ async function pickSize(bot, chatId, messageId, product, apiId, region, sessionM
   const perPage = 12;
   const totalPages = Math.max(1, Math.ceil(list.length / perPage));
   const p = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
+  const regionTok = cbPack(region);
   const kb = list.slice(p * perPage, (p + 1) * perPage).map(s => ([{
     text: `${s.slug} • ${Math.round(Number(s.memory || 0) / 1024)}GB RAM / ${s.vcpus} CPU`,
-    callback_data: `renter_${product}_sizepick:${apiId}:${region}:${s.slug}`
+    callback_data: `renter_${product}_sizepick:${apiId}:${regionTok}:${cbPack(s.slug)}`
   }]));
 
   const nav = [];
-  if (p > 0) nav.push({ text: '⬅️ Prev', callback_data: `renter_${product}_sizepage:${apiId}:${region}:${p - 1}` });
-  if (p < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `renter_${product}_sizepage:${apiId}:${region}:${p + 1}` });
+  if (p > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `renter_${product}_sizepage:${apiId}:${regionTok}:${p - 1}` });
+  if (p < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `renter_${product}_sizepage:${apiId}:${regionTok}:${p + 1}` });
   if (nav.length) kb.push(nav);
   kb.push([{ text: '« Kembali ke Region', callback_data: `renter_${product}_api:${apiId}` }]);
 
@@ -347,9 +350,12 @@ async function create(bot, chatId, messageId, product, apiId, region, sizeSlug) 
 
     let result;
     if (isC9) {
-      // Cloud9 installer uses the `x9.sh` script defaults (user Admin, port 8000).
+      // Cloud9 UpCloud pakai port 8880 (open di firewall default UpCloud),
+      // provider lain 8000.
+      const c9Port = isUpCloudToken(token) ? 8880 : 8000;
       result = await installCloud9(ip, 'root', rootPassword, {
-        sshMaxWaitMs: 12 * 60 * 1000
+        sshMaxWaitMs: 12 * 60 * 1000,
+        cloud9Port: c9Port
       }, (line) => console.log(`[RENTER C9 CREATE ${ip}] ${line}`));
     } else {
       const fpPass = genFastpanelPass();
@@ -360,7 +366,7 @@ async function create(bot, chatId, messageId, product, apiId, region, sizeSlug) 
       }, (line) => console.log(`[RENTER FP CREATE ${ip}] ${line}`));
     }
 
-    const port = result.port || (isC9 ? '8000' : '8888');
+    const port = result.port || (isC9 ? String(isUpCloudToken(token) ? 8880 : 8000) : '8888');
     const url = result.url || (isC9 ? `http://${ip}:${port}/` : `https://${ip}:${port}/`);
     const user = result.username || (isC9 ? 'Admin' : 'fastuser');
     const pass = result.password;

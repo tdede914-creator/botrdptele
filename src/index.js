@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const TelegramBot = require('node-telegram-bot-api');
 const { scheduleJob } = require('node-schedule');
-const { handleInstallDedicatedRDP, showManualCredsPrompt, handleDedicatedVPSCredentials, showDedicatedOSSelection, handleDedicatedOSSelection, handleDedicatedAuthSelection } = require('./handlers/dedicatedRdpHandler');
+const { handleInstallDedicatedRDP, handleDedicatedVPSCredentials, showDedicatedOSSelection, handleDedicatedOSSelection, handleDedicatedAuthSelection } = require('./handlers/dedicatedRdpHandler');
 const { handleDeposit, handleDepositQris, handleDepositAmount, handlePendingPayment } = require('./handlers/depositHandler');
 const { handleAddBalance, processAddBalance, handleBroadcast, processBroadcast, handleAtlanticAdmin } = require('./handlers/adminHandler');
 const cryptoDepositHandler = require('./handlers/cryptoDepositHandler');
@@ -16,6 +16,7 @@ const rdpOrder = require('./handlers/rdpOrderHandler');
 const shopHandler = require('./handlers/shopHandler');
 const renterHandler = require('./handlers/renterHandler');
 const renterPremiumHandler = require('./handlers/renterPremiumHandler');
+const { resolve: cbResolve } = require('./utils/cbToken');
 const cloud9Handler = require('./handlers/cloud9Handler');
 const fastpanelHandler = require('./handlers/fastpanelHandler');
 const backupHandler = require('./handlers/backupHandler');
@@ -278,18 +279,6 @@ bot.on('callback_query', async (query) => {
         else if (data === 'install_dedicated_rdp') {
             await handleInstallDedicatedRDP(bot, chatId, messageId, sessionManager);
         }
-        else if (data === 'install_src_manual') {
-            // 4c: user memilih memakai kredensial VPS manual (IP/user/password).
-            await showManualCredsPrompt(bot, chatId, messageId, sessionManager);
-        }
-        else if (data === 'install_src_api') {
-            // 4c: user memilih memakai API cloud sendiri (auto-create + install, seperti renter).
-            await renterHandler.startOpenApiRdp(bot, chatId, messageId, sessionManager);
-        }
-        else if (data.startsWith('open_api_add:')) {
-            const provider = data.split(':')[1] || 'digitalocean';
-            await renterHandler.promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider);
-        }
         else if (data === 'show_windows_selection') {
             await showWindowsSelection(bot, chatId, messageId, 0);
         }
@@ -437,19 +426,19 @@ bot.on('callback_query', async (query) => {
         else if (data.startsWith('renter_c9_regionpick:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'c9', Number(p[1]), p[2], sessionManager, 0);
+                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'c9', Number(p[1]), cbResolve(p[2]), sessionManager, 0);
             }
         }
         else if (data.startsWith('renter_c9_sizepage:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'c9', Number(p[1]), p[2], sessionManager, Number(p[3] || 0));
+                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'c9', Number(p[1]), cbResolve(p[2]), sessionManager, Number(p[3] || 0));
             }
         }
         else if (data.startsWith('renter_c9_sizepick:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.create(bot, chatId, messageId, 'c9', Number(p[1]), p[2], p[3]);
+                await renterPremiumHandler.create(bot, chatId, messageId, 'c9', Number(p[1]), cbResolve(p[2]), cbResolve(p[3]));
             }
         }
 
@@ -474,19 +463,19 @@ bot.on('callback_query', async (query) => {
         else if (data.startsWith('renter_fp_regionpick:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'fp', Number(p[1]), p[2], sessionManager, 0);
+                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'fp', Number(p[1]), cbResolve(p[2]), sessionManager, 0);
             }
         }
         else if (data.startsWith('renter_fp_sizepage:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'fp', Number(p[1]), p[2], sessionManager, Number(p[3] || 0));
+                await renterPremiumHandler.pickSize(bot, chatId, messageId, 'fp', Number(p[1]), cbResolve(p[2]), sessionManager, Number(p[3] || 0));
             }
         }
         else if (data.startsWith('renter_fp_sizepick:')) {
             const p = data.split(':');
             if (await renterHandler.requirePremiumRenter(bot, chatId, messageId)) {
-                await renterPremiumHandler.create(bot, chatId, messageId, 'fp', Number(p[1]), p[2], p[3]);
+                await renterPremiumHandler.create(bot, chatId, messageId, 'fp', Number(p[1]), cbResolve(p[2]), cbResolve(p[3]));
             }
         }
         else if (data.startsWith('rent_pay_refresh:')) {
@@ -509,6 +498,9 @@ bot.on('callback_query', async (query) => {
         }
         else if (data === 'renter_api_add_aws') {
             await renterHandler.promptAddApi(bot, chatId, messageId, sessionManager, 'aws');
+        }
+        else if (data === 'renter_api_add_upcloud') {
+            await renterHandler.promptAddApi(bot, chatId, messageId, sessionManager, 'upcloud');
         }
         else if (data === 'renter_api_delete_menu') {
             await renterHandler.showApiPick(bot, chatId, messageId, 'delete');
@@ -573,51 +565,51 @@ bot.on('callback_query', async (query) => {
         }
         else if (data.startsWith('renter_vps_sizepage:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'vps', Number(parts[1]), parts[2], sessionManager, Number(parts[3] || 0));
+            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'vps', Number(parts[1]), cbResolve(parts[2]), sessionManager, Number(parts[3] || 0));
         }
         else if (data.startsWith('renter_rdp_sizepage:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'rdp', Number(parts[1]), parts[2], sessionManager, Number(parts[3] || 0));
+            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'rdp', Number(parts[1]), cbResolve(parts[2]), sessionManager, Number(parts[3] || 0));
         }
         else if (data.startsWith('renter_vps_regionpick:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'vps', Number(parts[1]), parts[2], sessionManager);
+            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'vps', Number(parts[1]), cbResolve(parts[2]), sessionManager);
         }
         else if (data.startsWith('renter_rdp_regionpick:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'rdp', Number(parts[1]), parts[2], sessionManager);
+            await renterHandler.pickRegionFirst(bot, chatId, messageId, 'rdp', Number(parts[1]), cbResolve(parts[2]), sessionManager);
         }
         else if (data.startsWith('renter_vps_sizepick:')) {
             const parts = data.split(':');
-            await renterHandler.pickSize(bot, chatId, messageId, 'vps', Number(parts[1]), parts[2], parts[3], sessionManager);
+            await renterHandler.pickSize(bot, chatId, messageId, 'vps', Number(parts[1]), cbResolve(parts[2]), cbResolve(parts[3]), sessionManager);
         }
         else if (data.startsWith('renter_rdp_sizepick:')) {
             const parts = data.split(':');
-            await renterHandler.pickSize(bot, chatId, messageId, 'rdp', Number(parts[1]), parts[2], parts[3], sessionManager);
+            await renterHandler.pickSize(bot, chatId, messageId, 'rdp', Number(parts[1]), cbResolve(parts[2]), cbResolve(parts[3]), sessionManager);
         }
         else if (data.startsWith('renter_vps_size:')) {
             const parts = data.split(':');
-            await renterHandler.pickSize(bot, chatId, messageId, 'vps', Number(parts[1]), parts[3], parts[2], sessionManager);
+            await renterHandler.pickSize(bot, chatId, messageId, 'vps', Number(parts[1]), cbResolve(parts[3]), cbResolve(parts[2]), sessionManager);
         }
         else if (data.startsWith('renter_rdp_size:')) {
             const parts = data.split(':');
-            await renterHandler.pickSize(bot, chatId, messageId, 'rdp', Number(parts[1]), parts[3], parts[2], sessionManager);
+            await renterHandler.pickSize(bot, chatId, messageId, 'rdp', Number(parts[1]), cbResolve(parts[3]), cbResolve(parts[2]), sessionManager);
         }
         else if (data.startsWith('renter_vps_region:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegion(bot, chatId, messageId, 'vps', Number(parts[1]), parts[2], parts[3], sessionManager);
+            await renterHandler.pickRegion(bot, chatId, messageId, 'vps', Number(parts[1]), cbResolve(parts[2]), cbResolve(parts[3]), sessionManager);
         }
         else if (data.startsWith('renter_rdp_region:')) {
             const parts = data.split(':');
-            await renterHandler.pickRegion(bot, chatId, messageId, 'rdp', Number(parts[1]), parts[2], parts[3], sessionManager);
+            await renterHandler.pickRegion(bot, chatId, messageId, 'rdp', Number(parts[1]), cbResolve(parts[2]), cbResolve(parts[3]), sessionManager);
         }
         else if (data.startsWith('renter_vps_image:')) {
             const parts = data.split(':');
-            await renterHandler.createVps(bot, chatId, messageId, Number(parts[1]), parts[3], parts[2], parts.slice(4).join(':'));
+            await renterHandler.createVps(bot, chatId, messageId, Number(parts[1]), cbResolve(parts[3]), cbResolve(parts[2]), cbResolve(parts.slice(4).join(':')));
         }
         else if (data.startsWith('renter_rdp_win:')) {
             const parts = data.split(':');
-            await renterHandler.createRdp(bot, chatId, messageId, Number(parts[1]), parts[3], parts[2], Number(parts[4]));
+            await renterHandler.createRdp(bot, chatId, messageId, Number(parts[1]), cbResolve(parts[3]), cbResolve(parts[2]), Number(parts[4]));
         }
         else if (data === 'admin_renter_menu') {
             if (isAdmin(chatId)) await renterHandler.showAdminMenu(bot, chatId, messageId);
@@ -1006,6 +998,18 @@ Contoh region: \`us-east-1\`, \`ap-southeast-1\``, {
                 sessionManager.setAdminSession(chatId, { action: 'vps_add_aws_api', messageId });
             }
         }
+        else if (data === 'vps_admin_add_upcloud_api') {
+            if (isAdmin(chatId)) {
+                await safeMessageEditor.editMessage(bot, chatId, messageId, `Masukkan API Token UpCloud (format \`ucat_xxxx\`):
+
+Buat token di https://hub.upcloud.com/account/api-tokens
+Set *allowed_ips* = \`0.0.0.0/0\` (atau IP VPS bot) supaya request bot bisa diterima.`, {
+                    parse_mode: 'Markdown',
+                    reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin' }]] }
+                });
+                sessionManager.setAdminSession(chatId, { action: 'vps_add_upcloud_api', messageId });
+            }
+        }
         else if (data === 'vps_admin_disable_api') {
             await vpsAdmin.showDisableApiMenu(bot, chatId, messageId);
         }
@@ -1032,6 +1036,13 @@ Contoh region: \`us-east-1\`, \`ap-southeast-1\``, {
             const page = data.includes(':') ? Number(data.split(':')[1] || 0) : 0;
             await vpsAdmin.showAdminServiceList(bot, chatId, messageId, page);
         }
+        else if (data.startsWith('vps_admin_list_api:')) {
+            // Format: vps_admin_list_api:<apiId>[:<page>]
+            const parts = data.split(':');
+            const apiId = parts[1];
+            const page = Number(parts[2] || 0);
+            await vpsAdmin.showAdminServiceListByApi(bot, chatId, messageId, apiId, page);
+        }
         else if (data === 'vps_admin_check_do') {
             await vpsAdmin.showDoStatusMenu(bot, chatId, messageId);
         }
@@ -1047,13 +1058,8 @@ Contoh region: \`us-east-1\`, \`ap-southeast-1\``, {
             await vpsAdmin.showAdminBackupServiceList(bot, chatId, messageId, page);
         }
         else if (data === 'vps_admin_power_menu' || data.startsWith('vps_admin_power_menu:')) {
-            // Sekarang ini menampilkan pemilih API dulu (page diabaikan pada step API).
-            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, 0);
-        }
-        else if (data.startsWith('vps_power_api:')) {
-            // vps_power_api:<apiId|'renter'>:<page>
-            const parts = data.split(':');
-            await vpsAdmin.showPowerServiceListForApi(bot, chatId, messageId, parts[1], Number(parts[2] || 0));
+            const page = data.includes(':') ? Number(data.split(':')[1] || 0) : 0;
+            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, page);
         }
         else if (data.startsWith('vps_power_pick:')) {
             const parts = data.split(':');
@@ -1382,16 +1388,18 @@ else if (data === 'vps_admin_price') {
         else if (data.startsWith('copy_rdp_')) {
 
             const payload = data.replace('copy_rdp_', '');
-            // payload format: <ip>_<password>_<hostname>
+            // payload format: <ip[:port]>_<password>_<hostname>
             const parts = payload.split('_');
             const ip = parts[0] || '-';
             const password = parts[1] || '-';
             const hostname = parts.slice(2).join('_') || '-';
+            // ip bisa sudah mengandung :port (UpCloud=3389). Fallback 4443.
+            const server = ip.includes(':') ? ip : `${ip}:4443`;
 
             const detail =
 `📋 *Detail RDP (Copy):*\n\n` +
 `Hostname: \`${hostname}\`\n` +
-`Server: \`${ip}:4443\`\n` +
+`Server: \`${server}\`\n` +
 `Username: \`administrator\`\n` +
 `Password: \`${password}\``;
 
@@ -1452,7 +1460,8 @@ else if (data === 'copy_username_administrator' || data.startsWith('copy_usernam
 ` +
 `1. Buka Remote Desktop Connection (mstsc)
 ` +
-`2. Masukkan Server: IP:4443 (contoh: 1.2.3.4:4443)
+`2. Masukkan Server: IP:PORT sesuai detail server kamu
+   (UpCloud: port 3389, provider lain: port 4443)
 ` +
 `3. Username: administrator
 ` +
@@ -1461,7 +1470,7 @@ else if (data === 'copy_username_administrator' || data.startsWith('copy_usernam
 `5. Connect dan enjoy!
 
 ` +
-`Tips: pastikan port 4443 tidak diblokir oleh jaringan kamu.`;
+`Tips: pastikan port RDP kamu tidak diblokir oleh jaringan kamu.`;
             await bot.sendMessage(chatId, guide);
         }
         
@@ -1494,7 +1503,15 @@ else if (data.startsWith('test_rdp_')) {
                 const pendingPayment = await PaymentTracker.getPendingPayment(chatId);
                 if (pendingPayment) {
                     const { cancelPaymentMonitoring } = require('./utils/paymentStatus');
+                    const { cancelPayment } = require('./utils/payment');
                     cancelPaymentMonitoring(pendingPayment.transaction_id);
+                    // Fire-and-forget: batalkan invoice di gateway juga supaya tidak menumpuk
+                    // sebagai PENDING di dashboard PG-Donn-. Kalau gagal (mis. gateway
+                    // DompetX/Pakasir yang belum expose cancel API), abaikan — cukup
+                    // biarkan invoice expire alami di sisi PG.
+                    cancelPayment(pendingPayment.transaction_id).catch((err) => {
+                        console.log('[cancel_payment] cancel gateway invoice warning:', err?.message || err);
+                    });
                     await PaymentTracker.removePendingPayment(pendingPayment.transaction_id);
                 }
             } catch (e) {
@@ -1866,6 +1883,29 @@ Ketik /start untuk kembali.`, { chat_id: chatId, message_id: waitMsg.message_id 
 Reason: ${e.message || e}
 
 Format: ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION`, { chat_id: chatId, message_id: waitMsg.message_id });
+                }
+                return;
+            } else if (adminSession.action === 'vps_add_upcloud_api') {
+                try { await bot.deleteMessage(chatId, msg.message_id); } catch (e) {}
+                const token = String(msg.text || '').trim();
+                const waitMsg = await bot.sendMessage(chatId, '⏳ Mengecek dan menyimpan API UpCloud...');
+                try {
+                    const { addUpCloudApiToken } = require('./utils/vpsManager');
+                    const res = await addUpCloudApiToken(token);
+                    sessionManager.clearAdminSession(chatId);
+                    const emailInfo = res?.email ? `
+Account: ${res.email}` : '';
+                    await bot.editMessageText(`${res?.exists ? 'ℹ️ API UpCloud sudah ada' : '✅ API UpCloud berhasil ditambahkan'} (API#${res.apiId}).${emailInfo}
+
+Ketik /start untuk kembali.`, { chat_id: chatId, message_id: waitMsg.message_id });
+                } catch (e) {
+                    console.error('Add UpCloud API error:', e);
+                    sessionManager.clearAdminSession(chatId);
+                    await bot.editMessageText(`❌ Gagal menambahkan API UpCloud.
+Reason: ${e.message || e}
+
+Buat token di https://hub.upcloud.com/account/api-tokens
+Set allowed_ips = 0.0.0.0/0 supaya bot bisa akses.`, { chat_id: chatId, message_id: waitMsg.message_id });
                 }
                 return;
             } else if (adminSession.action === 'vps_add_prod_price') {

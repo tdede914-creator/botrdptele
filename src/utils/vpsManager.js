@@ -1,5 +1,5 @@
 const db = require('../config/database');
-const { getAccountEmail, isLinodeToken, isAwsToken, makeAwsToken, providerName } = require('./doApi');
+const { getAccountEmail, isLinodeToken, isAwsToken, isUpCloudToken, makeAwsToken, providerName } = require('./doApi');
 
 async function addDoApiToken(token) {
   const cleanToken = String(token || '').trim();
@@ -81,7 +81,43 @@ async function addAwsApiToken(input) {
 
 function getApiProvider(apiRow) {
   if (isAwsToken(apiRow?.token)) return 'AWS';
-  return isLinodeToken(apiRow?.token) ? 'Linode' : 'DigitalOcean';
+  if (isLinodeToken(apiRow?.token)) return 'Linode';
+  if (isUpCloudToken(apiRow?.token)) return 'UpCloud';
+  return 'DigitalOcean';
+}
+
+/**
+ * Tambah API UpCloud (bearer token format `ucat_xxxx`). Mirror pola AWS/Linode:
+ * validasi format, cek duplikat, ambil account label untuk display,
+ * simpan ke tabel `do_api` (shared table untuk semua provider).
+ */
+async function addUpCloudApiToken(input) {
+  const raw = String(input || '').trim();
+  if (!raw) throw new Error('EMPTY_TOKEN');
+  if (!isUpCloudToken(raw)) {
+    throw new Error('Format token UpCloud tidak valid. Harus diawali `ucat_` (buat di https://hub.upcloud.com/account/api-tokens).');
+  }
+  const cleanToken = raw;
+  const existing = await db.get('SELECT id, email, status FROM do_api WHERE token = ? LIMIT 1', [cleanToken]);
+  if (existing && existing.id) {
+    if (Number(existing.status) === 0) {
+      await db.run('UPDATE do_api SET status = 1 WHERE id = ?', [existing.id]);
+      return { exists: true, reenabled: true, apiId: existing.id, email: existing.email || null, provider: 'UpCloud' };
+    }
+    return { exists: true, reenabled: false, apiId: existing.id, email: existing.email || null, provider: 'UpCloud' };
+  }
+  // Coba ambil label akun (username / credits) via /1.3/account
+  let email = null;
+  try {
+    const { upcloudProbeAuth } = require('./upcloudApi');
+    const probe = await upcloudProbeAuth(cleanToken);
+    if (probe && probe.ok) {
+      email = probe.email + (probe.credits != null ? ` • credits ${probe.credits}` : '');
+    }
+  } catch (_) { /* ignore, tetap simpan */ }
+  if (!email) email = `UpCloud ${cleanToken.slice(5, 13)}...`; // fallback: prefix token
+  const ins = await db.run('INSERT INTO do_api (token, email, status) VALUES (?, ?, 1)', [cleanToken, email]);
+  return { exists: false, apiId: ins?.id || null, email, provider: 'UpCloud' };
 }
 
 function formatApiLabel(apiRow) {
@@ -405,18 +441,18 @@ async function incrementProductSlotDuration(productId, durationDays) {
 }
 
 
-async function createVpsInstance({ userId, apiId, productId, dropletId, ip, region, image, rootPassword, expiresAt = null, durationDays = null }) {
+async function createVpsInstance({ userId, apiId, productId, dropletId, ip, region, image, rootPassword, expiresAt = null, durationDays = null, rdpPort = null }) {
   await db.run(
-    `INSERT INTO vps_instances (user_id, api_id, origin_api_id, product_id, droplet_id, ip, region, image, root_password, created_at, expires_at, duration_days, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-    [userId, apiId, apiId, productId, dropletId, ip, region, image, rootPassword, Math.floor(Date.now() / 1000), expiresAt, durationDays]
+    `INSERT INTO vps_instances (user_id, api_id, origin_api_id, product_id, droplet_id, ip, region, image, root_password, created_at, expires_at, duration_days, rdp_port, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [userId, apiId, apiId, productId, dropletId, ip, region, image, rootPassword, Math.floor(Date.now() / 1000), expiresAt, durationDays, rdpPort]
   );
 }
 
 async function listUserVps(userId) {
   // Backward compatibility: returns both VPS and RDP instances (active)
   return await db.all(
-    `SELECT vi.id, vi.droplet_id, vi.ip, vi.region, vi.image, vi.created_at,
+    `SELECT vi.id, vi.droplet_id, vi.ip, vi.region, vi.image, vi.created_at, vi.rdp_port,
             vp.product_type, vp.size_slug, vp.price
      FROM vps_instances vi
      LEFT JOIN vps_products vp ON vp.id = vi.product_id
@@ -444,7 +480,7 @@ async function listAllActiveInstances() {
     `SELECT vi.id, vi.user_id,
             COALESCE(vi.api_id, vi.origin_api_id, vp.api_id) as api_id,
             vi.origin_api_id, vi.product_id, vi.droplet_id, vi.ip, vi.region, vi.image,
-            vi.created_at, vi.expires_at, vi.duration_days,
+            vi.created_at, vi.expires_at, vi.duration_days, vi.rdp_port,
             vp.product_type, vp.size_slug, vp.ram, vp.core,
             a.email as api_email,
             rr.username as buyer_username,
@@ -461,7 +497,7 @@ async function listAllActiveInstances() {
   try {
     renterRows = await db.all(
       `SELECT ri.id, ri.user_id, ri.api_id, NULL as origin_api_id, NULL as product_id, ri.droplet_id, ri.ip, ri.region, ri.image,
-              ri.created_at, r.expires_at as expires_at, NULL as duration_days,
+              ri.created_at, r.expires_at as expires_at, NULL as duration_days, ri.rdp_port,
               ri.type as product_type, ri.size_slug, NULL as ram, NULL as core,
               ra.email as api_email,
               r.username as buyer_username,
@@ -510,7 +546,7 @@ async function listAllActiveInstances() {
 async function getVpsInstance(vpsId) {
   return await db.get(
     `SELECT vi.id, vi.user_id, vi.api_id, vi.origin_api_id, vi.product_id, vi.droplet_id, vi.ip, vi.region, vi.image,
-            vi.root_password, vi.status, vi.expires_at, vi.duration_days,
+            vi.root_password, vi.status, vi.expires_at, vi.duration_days, vi.rdp_port,
             vp.product_type, vp.size_slug, vp.ram, vp.core, vp.price, vp.price_daily, vp.price_weekly
      FROM vps_instances vi
      LEFT JOIN vps_products vp ON vp.id = vi.product_id
@@ -522,6 +558,12 @@ async function getVpsInstance(vpsId) {
 
 async function markVpsDeleted(vpsId) {
   await db.run('UPDATE vps_instances SET status = 0 WHERE id = ?', [vpsId]);
+}
+
+// Update port RDP untuk instance (dipakai saat rebuild kalau provider berubah
+// atau instance lama belum punya nilai rdp_port).
+async function updateVpsInstanceRdpPort(vpsId, port) {
+  await db.run('UPDATE vps_instances SET rdp_port = ? WHERE id = ?', [Number(port) || null, vpsId]);
 }
 
 async function updateVpsInstancePassword(vpsId, newPassword) {
@@ -747,9 +789,10 @@ async function getAdminPowerTarget(source, id) {
 
 function _providerCondition(provider, alias = 'a') {
   const p = String(provider || 'all').toLowerCase();
-  if (p === 'do' || p === 'digitalocean') return ` AND ${alias}.token NOT LIKE 'linode:%' AND ${alias}.token NOT LIKE 'aws:%' `;
+  if (p === 'do' || p === 'digitalocean') return ` AND ${alias}.token NOT LIKE 'linode:%' AND ${alias}.token NOT LIKE 'aws:%' AND ${alias}.token NOT LIKE 'ucat_%' `;
   if (p === 'linode') return ` AND ${alias}.token LIKE 'linode:%' `;
   if (p === 'aws') return ` AND ${alias}.token LIKE 'aws:%' `;
+  if (p === 'upcloud') return ` AND ${alias}.token LIKE 'ucat_%' `;
   return '';
 }
 async function listApisByProvider(provider = 'all') {
@@ -762,7 +805,7 @@ async function listActiveProductProviders(productType, ram, core, durationDays =
   const d = Number(durationDays); const slotCol = _slotColumnForDuration(d); const priceCol = _priceColumnForDuration(d);
   const tf = _productTypeFilter(productType);
   return await db.all(
-    `SELECT CASE WHEN a.token LIKE 'linode:%' THEN 'linode' WHEN a.token LIKE 'aws:%' THEN 'aws' ELSE 'digitalocean' END as provider,
+    `SELECT CASE WHEN a.token LIKE 'linode:%' THEN 'linode' WHEN a.token LIKE 'aws:%' THEN 'aws' WHEN a.token LIKE 'ucat_%' THEN 'upcloud' ELSE 'digitalocean' END as provider,
             COUNT(*) as api_count, COALESCE(SUM(p.${slotCol}),0) as slot, MIN(p.${priceCol}) as price
      FROM vps_products p JOIN do_api a ON a.id = p.api_id AND a.status = 1
      WHERE p.status = 1 AND ${tf.sql} AND p.ram = ? AND p.core = ? AND COALESCE(p.${slotCol},0) > 0 AND p.${priceCol} IS NOT NULL
@@ -782,6 +825,7 @@ module.exports = {
   addDoApiToken,
   addLinodeApiToken,
   addAwsApiToken,
+  addUpCloudApiToken,
   getApiProvider,
   listApisByProvider,
   listActiveProductProviders,
@@ -810,6 +854,7 @@ module.exports = {
   decrementProductSlotDuration,
   incrementProductSlotDuration,
   createVpsInstance,
+  updateVpsInstanceRdpPort,
   listUserVps,
   listActiveVpsByApi,
   listAllActiveInstances,

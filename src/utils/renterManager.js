@@ -1,5 +1,5 @@
 const db = require('../config/database');
-const { getAccountEmail, isLinodeToken, isAwsToken, makeAwsToken, providerName } = require('./doApi');
+const { getAccountEmail, isLinodeToken, isAwsToken, isUpCloudToken, makeAwsToken, providerName } = require('./doApi');
 
 let initialized = false;
 async function ensureTables() {
@@ -65,6 +65,9 @@ async function ensureTables() {
     CREATE INDEX IF NOT EXISTS idx_renter_pending_user ON renter_pending_payments(user_id, status);
   `);
   try { await db.run('ALTER TABLE renter_instances ADD COLUMN api_id INTEGER'); } catch (_) {}
+  // rdp_port: port RDP per-instance (UpCloud=3389 karena firewall default-nya
+  // allow 3389 bukan 4443; provider lain=4443). Fallback 4443 di display.
+  try { await db.run('ALTER TABLE renter_instances ADD COLUMN rdp_port INTEGER'); } catch (_) {}
   // Tier support: 'basic' | 'premium'. Existing rows default to 'basic'.
   try { await db.run("ALTER TABLE renters ADD COLUMN tier TEXT NOT NULL DEFAULT 'basic'"); } catch (_) {}
   try { await db.run("ALTER TABLE renter_pending_payments ADD COLUMN tier TEXT NOT NULL DEFAULT 'basic'"); } catch (_) {}
@@ -83,13 +86,19 @@ function nowSec() {
 function normalizeProviderToken(token, provider = 'digitalocean') {
   const clean = String(token || '').trim();
   if (!clean) return '';
-  if (isLinodeToken(clean) || isAwsToken(clean)) return clean;
+  if (isLinodeToken(clean) || isAwsToken(clean) || isUpCloudToken(clean)) return clean;
   const p = String(provider || '').toLowerCase();
   if (p === 'linode') return `linode:${clean}`;
   if (p === 'aws') {
     const parts = clean.split('|').map(x => x.trim());
     if (parts.length < 2 || !parts[0] || !parts[1]) throw new Error('INVALID_AWS_FORMAT');
     return makeAwsToken(parts[0], parts[1], parts[2] || 'us-east-1');
+  }
+  if (p === 'upcloud') {
+    // UpCloud token sudah punya format sendiri (ucat_xxxx). Kalau tidak match,
+    // artinya user paste yang salah.
+    if (!isUpCloudToken(clean)) throw new Error('INVALID_UPCLOUD_TOKEN');
+    return clean;
   }
   return clean;
 }
@@ -338,7 +347,7 @@ async function listApis(userId, activeOnly = false) {
     status: r.status,
     created_at: r.created_at,
     provider: providerName(r.token),
-    provider_key: isAwsToken(r.token) ? 'aws' : (isLinodeToken(r.token) ? 'linode' : 'digitalocean')
+    provider_key: isAwsToken(r.token) ? 'aws' : (isLinodeToken(r.token) ? 'linode' : (isUpCloudToken(r.token) ? 'upcloud' : 'digitalocean'))
   }));
 }
 
@@ -382,9 +391,9 @@ async function saveInstance(data) {
   await ensureTables();
   await db.run(
     `INSERT INTO renter_instances
-     (user_id, type, droplet_id, ip, size_slug, region, image, root_password, rdp_password, windows_version, api_id, created_at, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
-    [data.userId, data.type, data.dropletId || null, data.ip || null, data.sizeSlug || null, data.region || null, data.image || null, data.rootPassword || null, data.rdpPassword || null, data.windowsVersion || null, data.apiId || null, nowSec()]
+     (user_id, type, droplet_id, ip, size_slug, region, image, root_password, rdp_password, windows_version, api_id, rdp_port, created_at, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+    [data.userId, data.type, data.dropletId || null, data.ip || null, data.sizeSlug || null, data.region || null, data.image || null, data.rootPassword || null, data.rdpPassword || null, data.windowsVersion || null, data.apiId || null, data.rdpPort || null, nowSec()]
   );
 }
 
@@ -407,8 +416,8 @@ async function markInstanceDeleted(userId, instanceId) {
 async function updateInstanceDroplet(userId, instanceId, data) {
   await ensureTables();
   await db.run(
-    'UPDATE renter_instances SET droplet_id = ?, ip = ?, region = ?, image = ?, root_password = ?, rdp_password = COALESCE(?, rdp_password), windows_version = COALESCE(?, windows_version), api_id = COALESCE(?, api_id) WHERE user_id = ? AND id = ?',
-    [data.dropletId || null, data.ip || null, data.region || null, data.image || null, data.rootPassword || null, data.rdpPassword || null, data.windowsVersion || null, data.apiId || null, Number(userId), Number(instanceId)]
+    'UPDATE renter_instances SET droplet_id = ?, ip = ?, region = ?, image = ?, root_password = ?, rdp_password = COALESCE(?, rdp_password), windows_version = COALESCE(?, windows_version), api_id = COALESCE(?, api_id), rdp_port = COALESCE(?, rdp_port) WHERE user_id = ? AND id = ?',
+    [data.dropletId || null, data.ip || null, data.region || null, data.image || null, data.rootPassword || null, data.rdpPassword || null, data.windowsVersion || null, data.apiId || null, data.rdpPort || null, Number(userId), Number(instanceId)]
   );
 }
 

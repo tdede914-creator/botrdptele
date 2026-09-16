@@ -169,6 +169,9 @@ fi
 # ====== KONFIGURASI USERNAME DAN PASSWORD ======
 USERNAME="Admin"
 PASSWORD="Donn0143"
+# Port Cloud9 bisa di-override via env C9_PORT (default 8000).
+# UpCloud pakai 8880 (port yang open di firewall default UpCloud).
+C9_PORT="${C9_PORT:-8000}"
 
 # ====== STOP CONTAINER IF EXIST (IDEMPOTENT) ======
 if sudo docker ps -a | grep -q Donn-Tools; then
@@ -183,7 +186,7 @@ sudo docker run -d \
   --name=Donn-Tools \
   -e USERNAME=$USERNAME \
   -e PASSWORD=$PASSWORD \
-  -p 8000:8000 \
+  -p ${C9_PORT}:8000 \
   lscr.io/linuxserver/cloud9:latest
 
 if [ $? -eq 0 ]; then
@@ -301,24 +304,24 @@ fi
 # Better than trusting exit codes: probe the port directly to confirm
 # Cloud9 is up and answering. This catches issues where the container
 # starts but Cloud9 itself crashes (e.g., bad user.settings).
-print_message "$YELLOW" "🔍 Verifying Cloud9 is listening on port 8000..."
+print_message "$YELLOW" "🔍 Verifying Cloud9 is listening on port ${C9_PORT}..."
 CLOUD9_UP=0
 for i in $(seq 1 24); do
-  if curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8000/ 2>/dev/null | grep -qE '^(200|301|302|401|403)$'; then
+  if curl -s --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:${C9_PORT}/ 2>/dev/null | grep -qE '^(200|301|302|401|403)$'; then
     CLOUD9_UP=1
     break
   fi
   # Also try ss/netstat as backup detection
-  if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ':8000$'; then
+  if ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ":${C9_PORT}\$"; then
     CLOUD9_UP=1
     break
   fi
   sleep 5
 done
 if [ "$CLOUD9_UP" -eq 1 ]; then
-  print_message "$GREEN" "✅ Cloud9 is answering on port 8000."
+  print_message "$GREEN" "✅ Cloud9 is answering on port ${C9_PORT}."
 else
-  print_message "$YELLOW" "⚠️ Port 8000 not confirmed yet, but container is running. Cloud9 mungkin masih startup, coba akses 1-2 menit lagi."
+  print_message "$YELLOW" "⚠️ Port ${C9_PORT} not confirmed yet, but container is running. Cloud9 mungkin masih startup, coba akses 1-2 menit lagi."
 fi
 
 # ====== DAPATKAN IP PUBLIK ======
@@ -337,7 +340,7 @@ print_message "$YELLOW" "🔒 Opening ports on firewall..."
 if ! ufw status | grep -q "Status: active"; then
   yes | sudo ufw --force enable
 fi
-yes | sudo ufw allow 8000/tcp
+yes | sudo ufw allow ${C9_PORT}/tcp
 yes | sudo ufw allow 25
 yes | sudo ufw allow 587
 yes | sudo ufw allow 465
@@ -351,7 +354,7 @@ fi
 
 # ====== OUTPUT UNTUK BOT PARSING (DETECT SUCCESS) ======
 echo "SUCCESS"
-echo "PORT=8000"
+echo "PORT=${C9_PORT}"
 echo "C9_USER=$USERNAME"
 echo "C9_PASS=$PASSWORD"
 
@@ -359,7 +362,7 @@ echo "C9_PASS=$PASSWORD"
 print_message "$BLUE" "==========================================="
 print_message "$GREEN" "🎉 INSTALASI CLOUD9 BERHASIL 🎉"
 print_message "$BLUE" "==========================================="
-print_message "$YELLOW" "🌟 Access Cloud9 at: http://$PUBLIC_IP:8000"
+print_message "$YELLOW" "🌟 Access Cloud9 at: http://$PUBLIC_IP:${C9_PORT}"
 print_message "$YELLOW" "🔑 Username: $USERNAME"
 print_message "$YELLOW" "🔑 Password: $PASSWORD"
 print_message "$YELLOW" "==========================================="

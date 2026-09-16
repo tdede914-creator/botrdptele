@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const net = require('net');
 const { Client } = require('ssh2');
 const { isAdmin, getBalance, deductBalance } = require('../utils/userManager');
-const { getRegions, getImages, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, linodeSetDirectDisk } = require('../utils/doApi');
+const { getRegions, getImages, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, linodeSetDirectDisk, RDP_PORT_UPCLOUD, RDP_PORT_DEFAULT } = require('../utils/doApi');
 const vpsManager = require('../utils/vpsManager');
 const backupManager = require('../utils/backupManager');
 const { notifyOrderSuccess, notifyOrderTestimonial } = require('../utils/orderNotifier');
@@ -139,6 +139,7 @@ function providerButtonLabel(provider) {
   const p = String(provider || '').toLowerCase();
   if (p === 'aws') return '🟠 Provider AWS';
   if (p === 'linode') return '🟣 Provider Linode';
+  if (p === 'upcloud') return '🟢 Provider UpCloud';
   return '🌊 Provider DigitalOcean';
 }
 
@@ -242,7 +243,7 @@ async function createVps(bot, chatId, messageId, productId, regionSlug, imageSlu
     reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] }
   });
 
-  const { dropletId, error } = await createDroplet(
+  const { dropletId, error, sshPrivateKey } = await createDroplet(
     token,
     `vps-${crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(8).toString('hex')}`,
     regionSlug,
@@ -285,6 +286,31 @@ async function createVps(bot, chatId, messageId, productId, regionSlug, imageSlu
   }
   await vpsManager.decrementProductSlotDuration(prod.id, d);
 
+  // UpCloud: connect via SSH KEY (pola AWS) lalu AKTIF set root password +
+  // enable password auth. UpCloud cloud-init template = key-only, jadi password
+  // auth harus di-enable setelah masuk pakai key (bukan nunggu cloud-init).
+  const { isUpCloudToken: _isUp } = require('../utils/doApi');
+  let _tipLine = '';
+  if (_isUp(token)) {
+    if (sshPrivateKey) {
+      await safeMessageEditor.editMessage(bot, chatId, messageId,
+        `⏳ VPS UpCloud dibuat, IP: ${ip}\n\nMengaktifkan akses root+password (2-4 menit)...`,
+        { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] } }
+      ).catch(() => {});
+      const { upcloudProvisionRootPassword } = require('../utils/upcloudApi');
+      const ok = await upcloudProvisionRootPassword(ip, sshPrivateKey, password, {
+        maxWaitMs: 6 * 60 * 1000,
+        onLog: (m) => console.log(`[VPS-ORDER ${ip}] ${m}`),
+      });
+      if (!ok) {
+        console.log(`[VPS-ORDER ${ip}] provision root password TIMEOUT`);
+        _tipLine = `\n💡 Kalau SSH ditolak, tunggu 1-2 menit lalu retry.\n`;
+      }
+    } else {
+      _tipLine = `\n💡 Kalau SSH refused/timeout, tunggu 1-2 menit lalu retry.\n`;
+    }
+  }
+
   await bot.sendMessage(chatId,
     `━━━ VPS BERHASIL DIBUAT ━━━\n` +
     `⏳ Durasi : ${Number(durationDays)} hari\n` +
@@ -295,7 +321,8 @@ async function createVps(bot, chatId, messageId, productId, regionSlug, imageSlu
     `📝 OS       : ${imageSlug}\n` +
     `📝 REGION   : ${regionSlug}\n` +
     `━━━━━━━━━━━━━━━━━━━━\n` +
-    `⚠️ Simpan data ini baik-baik.\n\n` +
+    `⚠️ Simpan data ini baik-baik.` +
+    _tipLine + `\n` +
     `Ketik /start untuk kembali ke menu.`,
   );
 
@@ -332,7 +359,7 @@ async function showMyServices(bot, chatId, messageId) {
 
   const kb = rows.map(r => {
     const type = vpsManager.isRdpInstance(r) ? 'rdp' : 'vps';
-    const ipText = r.ip ? (type === 'rdp' ? `${r.ip}:4443` : r.ip) : '-';
+    const ipText = r.ip ? (type === 'rdp' ? `${r.ip}:${r.rdp_port || 4443}` : r.ip) : '-';
     const labelType = type === 'rdp' ? '🪟 RDP' : '🖥️ VPS';
     const size = r.size_slug ? ` | ${r.size_slug}` : '';
     return ([{
@@ -381,14 +408,15 @@ async function viewMyService(bot, chatId, messageId, vpsId) {
   }
 
   const type = vpsManager.isRdpInstance(vps) ? 'rdp' : 'vps';
-  const ipText = vps.ip ? (type === 'rdp' ? `${vps.ip}:4443` : vps.ip) : '-';
+  const rdpPortDisp = vps.rdp_port || 4443;
+  const ipText = vps.ip ? (type === 'rdp' ? `${vps.ip}:${rdpPortDisp}` : vps.ip) : '-';
   const size = vps.size_slug ? vps.size_slug : '-';
   const region = vps.region || '-';
 
   let extra = '';
   if (type === 'rdp') {
     const osVer = String(vps.image || '').startsWith('rdp:') ? vps.image.replace('rdp:', '') : '-';
-    extra = `\n🪟 Windows: *${osVer}*\n🔒 Port RDP: *4443*\n👤 Username: *administrator*\n🔑 Password: _(hidden — klik tombol di bawah)_`;
+    extra = `\n🪟 Windows: *${osVer}*\n🔒 Port RDP: *${rdpPortDisp}*\n👤 Username: *administrator*\n🔑 Password: _(hidden — klik tombol di bawah)_`;
   } else {
     extra = `\n🐧 Image: *${vps.image || '-'}*`;
   }
@@ -465,7 +493,7 @@ async function showRdpPassword(bot, chatId, messageId, vpsId) {
     );
   }
 
-  const ipText = vps.ip ? `${vps.ip}:4443` : '-';
+  const ipText = vps.ip ? `${vps.ip}:${vps.rdp_port || 4443}` : '-';
   const bt = '`';
   const text =
     `🔑 *Password RDP*\n\n` +
@@ -479,7 +507,7 @@ async function showRdpPassword(bot, chatId, messageId, vpsId) {
     reply_markup: {
       inline_keyboard: [
         [{ text: '📋 Copy Password', callback_data: `copy_pass_${pass}` }],
-        [{ text: '📋 Copy Server', callback_data: `copy_server_${vps.ip}:4443` }],
+        [{ text: '📋 Copy Server', callback_data: `copy_server_${vps.ip}:${vps.rdp_port || 4443}` }],
         [{ text: '🙈 Sembunyikan', callback_data: `srv_view:${vps.id}` }]
       ]
     }
@@ -693,7 +721,14 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       }
       // Linode tidak boleh dipaksa Direct Disk sebelum installer RDP berjalan,
       // karena tahap awal butuh GRUB untuk boot Alpine installer. Direct Disk diset tertunda saat instalasi dimulai.
-      return { ok: true, ip, dropletId: created.dropletId, info };
+      return {
+        ok: true,
+        ip,
+        dropletId: created.dropletId,
+        info,
+        sshPrivateKey: created.sshPrivateKey || null,
+        sshUsername: created.sshUsername || null,
+      };
     }
 
     let made = await createWith(tokenInfo);
@@ -737,7 +772,17 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       await afterReady({ ip, rootPass: newPass, dropletId });
     }
 
-    return { ip, rootPass: newPass, dropletId, apiId: tokenInfo.apiId, productId: tokenInfo.productId, fromOriginalApi: tokenInfo.fromOriginal, provider: require('../utils/doApi').isAwsToken(tokenInfo.token) ? 'aws' : (isLinodeToken(tokenInfo.token) ? 'linode' : 'digitalocean') };
+    return {
+      ip,
+      rootPass: newPass,
+      dropletId,
+      apiId: tokenInfo.apiId,
+      productId: tokenInfo.productId,
+      fromOriginalApi: tokenInfo.fromOriginal,
+      provider: require('../utils/doApi').isAwsToken(tokenInfo.token) ? 'aws' : (isLinodeToken(tokenInfo.token) ? 'linode' : (require('../utils/doApi').isUpCloudToken(tokenInfo.token) ? 'upcloud' : 'digitalocean')),
+      sshPrivateKey: made.sshPrivateKey || null,
+      sshUsername: made.sshUsername || null,
+    };
   };
 
   if (action === 'delete') {
@@ -887,17 +932,26 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       `🚀 Memulai instalasi Windows RDP otomatis...\n\n` +
       `🌐 IP: \`${ip}\`\n` +
       `🪟 Windows: *${osName}*\n` +
-      `🔒 Port RDP: *4443*\n\n` +
-      `⏳ Estimasi maksimal 15 menit.\n` +
+      `🔒 Port RDP: *${(rebuilt.provider === 'upcloud') ? RDP_PORT_UPCLOUD : RDP_PORT_DEFAULT}*\n\n` +
+      `⏳ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot).\n` +
       `🔔 Kamu akan dapat notifikasi saat RDP siap.`,
       { parse_mode: 'Markdown' }
     );
 
-    const installPromise = installDedicatedRDP(ip, 'root', rootPass, {
+    // UpCloud: pakai SSH key auth (docs: satu-satunya method untuk cloud-init template)
+    const rbUpcloudKey = (rebuilt.provider === 'upcloud' && rebuilt.sshPrivateKey) ? rebuilt.sshPrivateKey : null;
+    const rbSshUser = rbUpcloudKey ? (rebuilt.sshUsername || 'root') : 'root';
+    // Port RDP per-provider: UpCloud=3389 (lolos firewall default), lainnya=4443.
+    const rdpPort = (rebuilt.provider === 'upcloud') ? RDP_PORT_UPCLOUD : RDP_PORT_DEFAULT;
+    try { await vpsManager.updateVpsInstanceRdpPort(vpsId, rdpPort); } catch (_) {}
+    const rbInstallCfg = {
       osVersion,
       password: rdpPass,
-      provider: rebuilt.provider || 'digitalocean'
-    }, (l) => console.log(`[${ip}] ${l}`));
+      provider: rebuilt.provider || 'digitalocean',
+      rdpPort,
+    };
+    if (rbUpcloudKey) { rbInstallCfg.privateKey = rbUpcloudKey; rbInstallCfg.useSudo = rbSshUser !== 'root'; }
+    const installPromise = installDedicatedRDP(ip, rbSshUser, rbUpcloudKey ? null : rootPass, rbInstallCfg, (l) => console.log(`[${ip}] ${l}`));
 
     // ─── BUGFIX (Linode Direct Disk): don't fall back to the OLD droplet id ─
     // Previous code: linodeSetDirectDisk(token, rebuilt.dropletId || vps.droplet_id)
@@ -940,7 +994,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
 
     const hostname = `rdp-${chatId}-${crypto.randomBytes(3).toString('hex')}`;
 
-    const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);
+    const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, rdpPort);
 
     // Wait for RDP port to become ready (monitor checks every 30s).
     // Timeout extended from 15 → 25 min: Linode non-SGP + AWS Windows
@@ -952,12 +1006,12 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       // rebuild" that hides the working credentials.
       await bot.sendMessage(chatId,
         buildTimeoutCardMarkdown({
-          ip, port: 4443, hostname, osName, region, password: rdpPass,
+          ip, port: rdpPort, hostname, osName, region, password: rdpPass,
           elapsedMin: mon?.totalTime || Math.round(RDP_MONITOR_TIMEOUT_MS / 60000)
         }),
         {
           parse_mode: 'Markdown',
-          reply_markup: buildTimeoutCardKeyboard({ ip, port: 4443, password: rdpPass })
+          reply_markup: buildTimeoutCardKeyboard({ ip, port: rdpPort, password: rdpPass })
         }
       );
       return;
@@ -967,7 +1021,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
 `🏷️ Hostname: ${hostname}\n` +
 	`📍 Region: ${region}\n` +
 	`🪟 Windows: ${osName}\n` +
-`🌐 Server: ${ip}:4443\n` +
+`🌐 Server: ${ip}:${rdpPort}\n` +
 `👤 Username: administrator\n` +
 `🔑 Password: ${rdpPass}\n\n` +
 `✅ RDP SUDAH SIAP digunakan sekarang!`;
@@ -975,7 +1029,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
     await bot.sendMessage(chatId, detail, {
       reply_markup: {
         inline_keyboard: [
-          [{ text: '📋 Copy Server', callback_data: `copy_server_${ip}:4443` }],
+          [{ text: '📋 Copy Server', callback_data: `copy_server_${ip}:${rdpPort}` }],
           [{ text: '📋 Copy Username', callback_data: 'copy_username_administrator' }],
           [{ text: '📋 Copy Password', callback_data: `copy_pass_${rdpPass}` }],
           [{ text: '🏠 Kembali ke Menu', callback_data: 'back_to_menu' }]
@@ -987,7 +1041,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
 	    await notifyOrderSuccess(bot, {
 	      event: action === 'reset_rdp' ? 'RESET' : 'REBUILD',
 	      type: 'RDP',
-	      ip: `${ip}:4443`,
+	      ip: `${ip}:${rdpPort}`,
 	      spec: `${Number(vps.ram || 0) || ''}GB / ${Number(vps.core || 0) || ''} CORE (${vps.size_slug || ''})`.replace(/^GB \/  CORE /, '').trim(),
 	      apiId: rebuilt.apiId || vps.api_id,
 	      durationDays: Number(vps.duration_days) || 30,

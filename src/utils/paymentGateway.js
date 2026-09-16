@@ -4,7 +4,10 @@ const db = require('../config/database');
 const PAKASIR_BASE_URL = (process.env.PAKASIR_BASE_URL || 'https://app.pakasir.com').replace(/\/$/, '');
 
 function getActiveGateway() {
-  return String(process.env.PAYMENT_GATEWAY || 'dompetx').toLowerCase() === 'pakasir' ? 'pakasir' : 'dompetx';
+  const raw = String(process.env.PAYMENT_GATEWAY || 'dompetx').toLowerCase();
+  if (raw === 'pakasir') return 'pakasir';
+  if (raw === 'orderkuota') return 'orderkuota';
+  return 'dompetx';
 }
 
 function getPakasirConfig() {

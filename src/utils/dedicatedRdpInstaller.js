@@ -21,12 +21,7 @@ function normalizeLf(s) {
  *   We retry authentication and transient socket failures for a bounded time.
  */
 async function installDedicatedRDP(host, username, password, config, onLog) {
-  // Linode butuh jendela retry SSH lebih panjang: boot Ubuntu awal + cloud-init
-  // (bila region mendukung Metadata) bisa memakan waktu lebih lama sebelum
-  // login root via password benar-benar siap.
-  const isLinode = String(config?.provider || '').toLowerCase() === 'linode';
-  const defaultMaxWaitMs = isLinode ? 12 * 60 * 1000 : 8 * 60 * 1000;
-  const maxWaitMs = config?.sshMaxWaitMs ?? defaultMaxWaitMs;       // total time to keep trying SSH
+  const maxWaitMs = config?.sshMaxWaitMs ?? 8 * 60 * 1000;          // total time to keep trying SSH
   const retryEveryMs = config?.sshRetryIntervalMs ?? 15 * 1000;     // retry interval
   const deadline = Date.now() + maxWaitMs;
 
@@ -119,14 +114,18 @@ function runOnce(host, username, password, config, onLog) {
           const qPass = shellQuote(windowsPassword || '');
           const qOs = shellQuote(osVersion || '');
           const qProvider = shellQuote(config?.provider || config?.providerName || config?.cloudProvider || '');
+          // Port RDP yang di-pass ke tele.sh via env RDP_PORT. Default 4443
+          // (provider lain). UpCloud kirim 3389 supaya lolos firewall default.
+          const rdpPortVal = Number(config?.rdpPort) > 0 ? Number(config.rdpPort) : 4443;
+          const qPort = shellQuote(String(rdpPortVal));
           const basePrep = `sed -i 's/\\r$//' ${remotePath} ${remoteReinstallPath} 2>/dev/null || true; chmod +x ${remotePath} ${remoteReinstallPath} 2>/dev/null || true`;
           let cmd;
           if (useSudo) {
             // AWS/EC2 biasanya login sebagai ubuntu/ec2-user memakai SSH key. Script reinstall wajib root,
             // jadi salin script ke /root lalu jalankan via sudo env agar root + environment tetap masuk.
-            cmd = `${basePrep}; sudo -n install -m 755 ${remotePath} /root/tele.sh; sudo -n install -m 755 ${remoteReinstallPath} /root/reinstall.sh 2>/dev/null || true; sudo -n env WIN_PASS=${qPass} IMG_VERSION=${qOs} INSTALL_PROVIDER=${qProvider} bash /root/tele.sh ${qPass} ${qOs}`;
+            cmd = `${basePrep}; sudo -n install -m 755 ${remotePath} /root/tele.sh; sudo -n install -m 755 ${remoteReinstallPath} /root/reinstall.sh 2>/dev/null || true; sudo -n env WIN_PASS=${qPass} IMG_VERSION=${qOs} INSTALL_PROVIDER=${qProvider} RDP_PORT=${qPort} bash /root/tele.sh ${qPass} ${qOs}`;
           } else {
-            cmd = `${basePrep}; WIN_PASS=${qPass} IMG_VERSION=${qOs} INSTALL_PROVIDER=${qProvider} bash ${remotePath} ${qPass} ${qOs}`;
+            cmd = `${basePrep}; WIN_PASS=${qPass} IMG_VERSION=${qOs} INSTALL_PROVIDER=${qProvider} RDP_PORT=${qPort} bash ${remotePath} ${qPass} ${qOs}`;
           }
           log('🚀 Executing installation command...');
           conn.exec(cmd, (err, stream) => {
@@ -208,12 +207,7 @@ function runOnce(host, username, password, config, onLog) {
       port: 22,
       username,
       readyTimeout: 45000,
-      tryKeyboard: false,
-      // Keepalive: jaga channel tetap hidup selama instalasi panjang yang "diam".
-      // Tanpa ini, koneksi yang sebenarnya masih jalan bisa terputus dan salah
-      // terbaca sebagai "reboot sukses". Dengan keepalive, putus = benar-benar reboot.
-      keepaliveInterval: 20000,
-      keepaliveCountMax: 6
+      tryKeyboard: false
     };
     if (config?.privateKey) {
       connectOptions.privateKey = config.privateKey;

@@ -5,7 +5,7 @@ const fastpanelManager = require('../utils/fastpanelManager');
 const adminSettings = require('../utils/adminSettings');
 const {
   getSizes, getRegions, createDroplet, waitPublicIp, deleteDroplet,
-  isAwsToken, isLinodeToken, parseAwsToken
+  isAwsToken, isLinodeToken, isUpCloudToken, parseAwsToken
 } = require('../utils/doApi');
 const vpsManager = require('../utils/vpsManager');
 const { installFastpanel } = require('../utils/fastpanelInstaller');
@@ -98,6 +98,7 @@ function slotByDuration(prod, durationDays) {
 function ubuntuImageForToken(token) {
   if (isAwsToken(token)) return 'aws:ubuntu22.04';
   if (isLinodeToken(token)) return 'linode/ubuntu22.04';
+  if (isUpCloudToken(token)) return 'upcloud/ubuntu22.04';
   return 'ubuntu-22-04-x64';
 }
 
@@ -490,9 +491,9 @@ async function pickSize(bot, chatId, messageId, apiId, page = 0) {
   }]));
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: `fastpanel_add_sizepage:${apiId}:${safePage - 1}` });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `fastpanel_add_sizepage:${apiId}:${safePage - 1}` });
   nav.push({ text: `${safePage + 1}/${totalPages}`, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `fastpanel_add_sizepage:${apiId}:${safePage + 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `fastpanel_add_sizepage:${apiId}:${safePage + 1}` });
   kb.push(nav);
   kb.push([{ text: '« Kembali', callback_data: 'fastpanel_admin_add' }]);
 

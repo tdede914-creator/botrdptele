@@ -218,21 +218,45 @@ async function createPayment(apiKey, reffId, amount) {
   if (gateway === 'pakasir') {
     return require('./paymentGateway').createPakasirPayment(reffId, amount);
   }
+  if (gateway === 'orderkuota') {
+    return require('./orderkuotaGateway').createOrderkuotaPayment(reffId, amount);
+  }
   return createDompetXPayment(apiKey, reffId, amount);
 }
 
 async function checkPaymentStatus(apiKeyOrTransactionId, maybeTransactionId, maybeAmount = null) {
   const gateway = require('./paymentGateway').getActiveGateway();
+  const transactionId = maybeTransactionId || apiKeyOrTransactionId;
   if (gateway === 'pakasir') {
-    const transactionId = maybeTransactionId || apiKeyOrTransactionId;
     return require('./paymentGateway').checkPakasirStatus(transactionId, maybeAmount);
   }
+  if (gateway === 'orderkuota') {
+    return require('./orderkuotaGateway').checkOrderkuotaStatus(transactionId);
+  }
   return checkDompetXStatus(apiKeyOrTransactionId, maybeTransactionId);
+}
+
+/**
+ * Batalkan invoice di gateway aktif. Dipanggil saat user tap "Batalkan"
+ * supaya invoice PENDING tidak menumpuk sebagai sampah di dashboard PG.
+ *
+ * Aman dipanggil fire-and-forget: kalau gateway tidak support cancel API
+ * (Pakasir / DompetX belum), fungsi ini return `{ success: true, skipped: true }`
+ * tanpa error.
+ */
+async function cancelPayment(transactionId) {
+  const gateway = require('./paymentGateway').getActiveGateway();
+  if (gateway === 'orderkuota') {
+    return require('./orderkuotaGateway').cancelOrderkuotaPayment(transactionId);
+  }
+  // Pakasir & DompetX adapter belum expose cancel endpoint.
+  return { success: true, skipped: true, reason: `cancel not implemented for gateway=${gateway}` };
 }
 
 module.exports = {
   createPayment,
   checkPaymentStatus,
+  cancelPayment,
   isPaymentStatusSuccessful,
   createDompetXPayment,
   checkDompetXStatus

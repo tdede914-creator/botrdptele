@@ -10,6 +10,7 @@ async function showVpsAdminMenu(bot, chatId, messageId) {
     [{ text: '➕ Tambah API DO', callback_data: 'vps_admin_add_api' }],
     [{ text: '➕ Tambah API Linode', callback_data: 'vps_admin_add_linode_api' }],
     [{ text: '➕ Tambah API AWS', callback_data: 'vps_admin_add_aws_api' }],
+    [{ text: '➕ Tambah API UpCloud', callback_data: 'vps_admin_add_upcloud_api' }],
     [{ text: '⛔ Nonaktifkan API Cloud', callback_data: 'vps_admin_disable_api' }],
     [{ text: '🗑️ Hapus API Cloud (Permanen)', callback_data: 'vps_admin_del_api' }],
     [{ text: '➕ Tambah Spesifikasi VPS/RDP', callback_data: 'vps_admin_add_prod_combo' }],
@@ -102,6 +103,7 @@ async function pickProviderForAddProduct(bot, chatId, messageId, productType = '
     [{ text: '🌊 Provider DigitalOcean', callback_data: `vps_prod_provider:${productType}:digitalocean` }],
     [{ text: '🟣 Provider Linode', callback_data: `vps_prod_provider:${productType}:linode` }],
     [{ text: '🟠 Provider AWS', callback_data: `vps_prod_provider:${productType}:aws` }],
+    [{ text: '🟢 Provider UpCloud', callback_data: `vps_prod_provider:${productType}:upcloud` }],
     [{ text: '☁️ Semua Provider', callback_data: `vps_prod_provider:${productType}:all` }],
     [{ text: '« Kembali', callback_data: 'vps_admin' }]
   ];
@@ -151,9 +153,9 @@ async function pickSizeMenu(bot, chatId, messageId, productType, apiId, page = 0
   }]));
 
   const navRow = [];
-  if (safePage > 0) navRow.push({ text: '⬅️ Prev', callback_data: `vps_prod_sizepage:${productType}:${apiId}:${safePage - 1}` });
+  if (safePage > 0) navRow.push({ text: '⬅️ Halaman sebelumnya', callback_data: `vps_prod_sizepage:${productType}:${apiId}:${safePage - 1}` });
   navRow.push({ text: `📄 ${safePage + 1}/${totalPages}`, callback_data: 'noop' });
-  if (safePage < totalPages - 1) navRow.push({ text: 'Next ➡️', callback_data: `vps_prod_sizepage:${productType}:${apiId}:${safePage + 1}` });
+  if (safePage < totalPages - 1) navRow.push({ text: '➡️ Halaman berikutnya', callback_data: `vps_prod_sizepage:${productType}:${apiId}:${safePage + 1}` });
   kb.push(navRow);
 
   kb.push([{ text: '« Kembali', callback_data: `vps_admin_add_prod_${productType}` }]);
@@ -272,9 +274,9 @@ async function showStockGroupMenu(bot, chatId, messageId, productType = 'vps', d
   });
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: `vps_stock_group:${provider}:${productType}:${durationDays}:${safePage - 1}` });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `vps_stock_group:${provider}:${productType}:${durationDays}:${safePage - 1}` });
   nav.push({ text: `📄 ${safePage + 1}/${totalPages}`, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `vps_stock_group:${provider}:${productType}:${durationDays}:${safePage + 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `vps_stock_group:${provider}:${productType}:${durationDays}:${safePage + 1}` });
   kb.push(nav);
 
   kb.push([{ text: '« Kembali', callback_data: `vps_stock_provider:${provider}` }]);
@@ -366,9 +368,9 @@ async function showPriceSpecMenu(bot, chatId, messageId, productType = 'vps', pa
   });
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: `vps_price_type:${provider}:${productType}:${safePage - 1}` });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: `vps_price_type:${provider}:${productType}:${safePage - 1}` });
   nav.push({ text: `📄 ${safePage + 1}/${totalPages}`, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: `vps_price_type:${provider}:${productType}:${safePage + 1}` });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: `vps_price_type:${provider}:${productType}:${safePage + 1}` });
   kb.push(nav);
 
   // Back goes to provider selection instead of the now-removed VPS/RDP type step.
@@ -417,10 +419,55 @@ function formatApiHeader(row) {
 async function showAdminServiceList(bot, chatId, messageId, page = 0) {
   if (!isAdmin(chatId)) return;
 
-  const rows = await vpsManager.listAllActiveInstances();
+  // API-FIRST: tampilkan daftar API dulu (bukan langsung semua server).
+  // Klik salah satu API -> baru muncul list VPS/RDP milik API itu.
+  // EXCLUDE renter (source === 'renter') karena beda cakupan (data renter
+  // ada di menu Sewa/Renter tersendiri, bukan di admin list order).
+  const allRows = await vpsManager.listAllActiveInstances();
+  const rows = allRows.filter(r => r.source !== 'renter');
   if (!rows.length) {
-    const emptyText = '📋 LIST VPS&RDP\n\nBelum ada VPS/RDP aktif.\n\nCatatan: list membaca vps_instances, renter_instances, dan rdp_installations.';
+    const emptyText = '📋 LIST VPS&RDP\n\nBelum ada VPS/RDP aktif (di luar renter).';
     const opts = { reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin' }]] } };
+    const res = await safeMessageEditor.editMessage(bot, chatId, messageId, emptyText, opts);
+    if (!res || res.success === false) return bot.sendMessage(chatId, emptyText, opts);
+    return res;
+  }
+
+  // Kelompokkan per API.
+  const groups = new Map();
+  for (const r of rows) {
+    const key = r.api_id != null ? String(r.api_id) : 'none';
+    if (!groups.has(key)) groups.set(key, { apiId: r.api_id, email: r.api_email, rdp: 0, vps: 0 });
+    const g = groups.get(key);
+    if (vpsManager.isRdpInstance(r)) g.rdp += 1; else g.vps += 1;
+  }
+
+  const kb = [];
+  for (const g of groups.values()) {
+    const email = g.email ? ` ${g.email}` : '';
+    const label = `API#${g.apiId != null ? g.apiId : '-'}${email} — ${g.rdp} RDP / ${g.vps} VPS`;
+    kb.push([{ text: label, callback_data: 'vps_admin_list_api:' + (g.apiId != null ? g.apiId : 'none') }]);
+  }
+  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
+
+  const listText = '📋 *LIST VPS&RDP AKTIF*\n\nPilih API untuk melihat daftar server-nya:\n_(data renter tidak termasuk — ada di menu Sewa)_';
+  const opts = { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } };
+  const res = await safeMessageEditor.editMessage(bot, chatId, messageId, listText, opts);
+  if (!res || res.success === false) return bot.sendMessage(chatId, listText, opts);
+  return res;
+}
+
+// Detail server milik satu API (dipanggil setelah admin klik API di list).
+// Tetap exclude renter. Pagination 18 per halaman.
+async function showAdminServiceListByApi(bot, chatId, messageId, apiId, page = 0) {
+  if (!isAdmin(chatId)) return;
+
+  const allRows = await vpsManager.listAllActiveInstances();
+  const rows = allRows.filter(r => r.source !== 'renter' && String(r.api_id != null ? r.api_id : 'none') === String(apiId));
+
+  if (!rows.length) {
+    const emptyText = '📋 LIST VPS&RDP\n\nTidak ada server aktif untuk API ini.';
+    const opts = { reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin_list_services' }]] } };
     const res = await safeMessageEditor.editMessage(bot, chatId, messageId, emptyText, opts);
     if (!res || res.success === false) return bot.sendMessage(chatId, emptyText, opts);
     return res;
@@ -431,34 +478,27 @@ async function showAdminServiceList(bot, chatId, messageId, page = 0) {
   const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
   const items = rows.slice(safePage * perPage, safePage * perPage + perPage);
 
-  const lines = [];
-  let lastHeader = null;
+  const header = formatApiHeader(items[0]);
+  const lines = [header, ''];
   for (const r of items) {
-    const header = formatApiHeader(r);
-    if (header !== lastHeader) {
-      if (lines.length) lines.push('');
-      lines.push(header);
-      lastHeader = header;
-    }
-
     const type = (vpsManager.isRdpInstance(r) ? 'rdp' : 'vps').toUpperCase();
-    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':4443' : String(r.ip)) : '-';
+    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':' + (r.rdp_port || 4443) : String(r.ip)) : '-';
     const exp = fmtDateShort(r.expires_at);
     const buyer = formatBuyerLabel(r);
-    const src = r.source === 'renter' ? ' RENTER' : '';
-    lines.push(`${type} ${ip} EXP ${exp} BUYER (${buyer})${src}`);
+    lines.push(`${type} ${ip} EXP ${exp} BUYER (${buyer})`);
   }
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: 'vps_admin_list_services:' + (safePage - 1) });
+  if (safePage > 0) nav.push({ text: '⬅️ Sebelumnya', callback_data: 'vps_admin_list_api:' + apiId + ':' + (safePage - 1) });
   nav.push({ text: (safePage + 1) + '/' + totalPages, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: 'vps_admin_list_services:' + (safePage + 1) });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Berikutnya', callback_data: 'vps_admin_list_api:' + apiId + ':' + (safePage + 1) });
 
   const kb = [];
   if (totalPages > 1) kb.push(nav);
-  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
+  kb.push([{ text: '« Pilih API lain', callback_data: 'vps_admin_list_services' }]);
+  kb.push([{ text: '🏠 Menu Admin', callback_data: 'vps_admin' }]);
 
-  const listText = '📋 LIST VPS&RDP AKTIF\nTotal: ' + rows.length + '\n\n' + lines.join('\n');
+  const listText = '📋 LIST VPS&RDP AKTIF\nTotal API ini: ' + rows.length + '\n\n' + lines.join('\n');
   const opts = { reply_markup: { inline_keyboard: kb } };
   const res = await safeMessageEditor.editMessage(bot, chatId, messageId, listText, opts);
   if (!res || res.success === false) return bot.sendMessage(chatId, listText, opts);
@@ -500,16 +540,16 @@ async function showAdminBackupServiceList(bot, chatId, messageId, page = 0) {
 
   const kb = items.map(r => {
     const type = (vpsManager.isRdpInstance(r) ? 'rdp' : 'vps').toUpperCase();
-    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':4443' : String(r.ip)) : '-';
+    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':' + (r.rdp_port || 4443) : String(r.ip)) : '-';
     const src = r.source === 'renter' ? 'renter' : 'order';
     const backupId = src === 'renter' ? -Math.abs(Number(r.id)) : Number(r.id);
     return [{ text: `${type} ${ip} | Buyer ${r.user_id || '-'}${src === 'renter' ? ' | RENTER' : ''}`, callback_data: `backup_menu:${backupId}` }];
   });
 
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: 'vps_admin_backup_menu:' + (safePage - 1) });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: 'vps_admin_backup_menu:' + (safePage - 1) });
   nav.push({ text: (safePage + 1) + '/' + totalPages, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: 'vps_admin_backup_menu:' + (safePage + 1) });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: 'vps_admin_backup_menu:' + (safePage + 1) });
   if (totalPages > 1) kb.push(nav);
   kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
 
@@ -634,11 +674,8 @@ function powerSourceForRow(r) {
   return r.source === 'renter' ? 'renter' : 'normal';
 }
 
-// STEP 1 (baru): pilih API/akun cloud dulu, sama seperti pola menu Hapus VPS & List VPS.
-// Tujuan: admin tidak lagi langsung dibanjiri semua VPS+RDP dari semua API sekaligus.
 async function showPowerServiceList(bot, chatId, messageId, page = 0) {
   if (!isAdmin(chatId)) return;
-
   const rows = (await vpsManager.listAllActiveInstances()).filter(r => r.droplet_id);
   if (!rows.length) {
     return safeMessageEditor.editMessage(bot, chatId, messageId, '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nTidak ada droplet aktif yang bisa di ON/OFF.', {
@@ -646,90 +683,23 @@ async function showPowerServiceList(bot, chatId, messageId, page = 0) {
       reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin' }]] }
     });
   }
-
-  // Hitung jumlah server per API (admin) + total server milik penyewa (renter).
-  // api_id pada baris renter merujuk ke renter_do_api (id space berbeda), jadi
-  // penyewa dikelompokkan terpisah agar tidak salah cocok dengan do_api admin.
-  const adminCount = new Map(); // api_id -> jumlah
-  let renterCount = 0;
-  for (const r of rows) {
-    if (r.source === 'renter') { renterCount++; continue; }
-    const key = Number(r.api_id || 0);
-    adminCount.set(key, (adminCount.get(key) || 0) + 1);
-  }
-
-  const apis = await vpsManager.listDoApis();
-  const kb = [];
-  for (const a of apis) {
-    const cnt = adminCount.get(Number(a.id)) || 0;
-    if (cnt <= 0) continue; // hanya tampilkan API yang punya server aktif
-    const base = vpsManager.formatApiLabel ? vpsManager.formatApiLabel(a) : (a.email ? `${a.email} - API#${a.id}` : `API#${a.id}`);
-    const label = (Number(a.status) === 1) ? base : `⛔ ${base} (DISABLED)`;
-    kb.push([{ text: `${label} • ${cnt} server`, callback_data: `vps_power_api:${a.id}:0` }]);
-  }
-
-  // Tampilkan juga API yang punya server tapi sudah tidak ada di daftar do_api (mis. API terhapus).
-  const knownIds = new Set(apis.map(a => Number(a.id)));
-  for (const [key, cnt] of adminCount.entries()) {
-    if (key && !knownIds.has(key) && cnt > 0) {
-      kb.push([{ text: `API#${key} • ${cnt} server`, callback_data: `vps_power_api:${key}:0` }]);
-    }
-  }
-
-  if (renterCount > 0) {
-    kb.push([{ text: `👥 Server Penyewa (Renter) • ${renterCount} server`, callback_data: 'vps_power_api:renter:0' }]);
-  }
-
-  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
-
-  return safeMessageEditor.editMessage(bot, chatId, messageId,
-    '🔌 *TURN ON / TURN OFF VPS&RDP*\n\n1️⃣ Pilih API/akun cloud dulu, lalu daftar server dari API itu akan muncul:', {
-    parse_mode: 'Markdown',
-    reply_markup: { inline_keyboard: kb }
-  });
-}
-
-// STEP 2 (baru): daftar server milik satu API (atau kelompok penyewa) untuk di-ON/OFF.
-// apiKey berupa angka (id do_api) ATAU string 'renter'.
-async function showPowerServiceListForApi(bot, chatId, messageId, apiKey, page = 0) {
-  if (!isAdmin(chatId)) return;
-
-  const isRenter = String(apiKey) === 'renter';
-  const rows = (await vpsManager.listAllActiveInstances()).filter(r => {
-    if (!r.droplet_id) return false;
-    if (isRenter) return r.source === 'renter';
-    return r.source !== 'renter' && Number(r.api_id) === Number(apiKey);
-  });
-
-  if (!rows.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId,
-      '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nTidak ada server aktif untuk pilihan ini.', {
-      parse_mode: 'Markdown',
-      reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin_power_menu' }]] }
-    });
-  }
-
   const perPage = 12;
   const totalPages = Math.max(1, Math.ceil(rows.length / perPage));
   const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
   const items = rows.slice(safePage * perPage, safePage * perPage + perPage);
   const kb = items.map(r => {
     const type = (vpsManager.isRdpInstance(r) ? 'rdp' : 'vps').toUpperCase();
-    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':4443' : String(r.ip)) : 'DROP ' + r.droplet_id;
+    const ip = r.ip ? (type === 'RDP' ? String(r.ip) + ':' + (r.rdp_port || 4443) : String(r.ip)) : 'DROP ' + r.droplet_id;
     const src = powerSourceForRow(r);
     return [{ text: type + ' ' + ip + ' | Buyer ' + (r.user_id || '-'), callback_data: 'vps_power_pick:' + src + ':' + r.id }];
   });
-
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: 'vps_power_api:' + apiKey + ':' + (safePage - 1) });
+  if (safePage > 0) nav.push({ text: '⬅️ Halaman sebelumnya', callback_data: 'vps_admin_power_menu:' + (safePage - 1) });
   nav.push({ text: (safePage + 1) + '/' + totalPages, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: 'vps_power_api:' + apiKey + ':' + (safePage + 1) });
+  if (safePage < totalPages - 1) nav.push({ text: '➡️ Halaman berikutnya', callback_data: 'vps_admin_power_menu:' + (safePage + 1) });
   if (totalPages > 1) kb.push(nav);
-  kb.push([{ text: '« Pilih API lain', callback_data: 'vps_admin_power_menu' }]);
-
-  const header = isRenter ? '👥 Server Penyewa (Renter)' : ('API#' + apiKey);
-  return safeMessageEditor.editMessage(bot, chatId, messageId,
-    '🔌 *TURN ON / TURN OFF VPS&RDP*\n\n📂 ' + header + '\n2️⃣ Pilih server yang ingin dinyalakan/dimatikan:', {
+  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
+  return safeMessageEditor.editMessage(bot, chatId, messageId, '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nPilih server yang ingin dinyalakan/dimatikan:', {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: kb }
   });
@@ -740,7 +710,7 @@ async function showPowerActionMenu(bot, chatId, messageId, source, id) {
   const target = await vpsManager.getAdminPowerTarget(source, id);
   if (!target) return bot.sendMessage(chatId, '❌ Data VPS/RDP tidak ditemukan atau droplet ID kosong.');
   const type = (vpsManager.isRdpInstance(target) ? 'rdp' : 'vps').toUpperCase();
-  const ip = target.ip ? (type === 'RDP' ? String(target.ip) + ':4443' : String(target.ip)) : '-';
+  const ip = target.ip ? (type === 'RDP' ? String(target.ip) + ':' + (target.rdp_port || 4443) : String(target.ip)) : '-';
   const apiInfo = target.api_id ? ('API#' + target.api_id + (target.email ? ' (' + target.email + ')' : '')) : '-';
   const text = '🔌 *TURN ON / TURN OFF ' + type + '*\n\n' +
     'IP: ' + ip + '\n' +
@@ -763,7 +733,7 @@ async function executePowerAction(bot, chatId, messageId, source, id, action) {
   if (!target || !target.droplet_id) return bot.sendMessage(chatId, '❌ Data VPS/RDP tidak ditemukan atau droplet ID kosong.');
   if (!target.token) return bot.sendMessage(chatId, '❌ API asal VPS/RDP ini tidak ditemukan. TURN ON/OFF dibatalkan agar tidak salah pakai API lain.');
   const type = (vpsManager.isRdpInstance(target) ? 'rdp' : 'vps').toUpperCase();
-  const ip = target.ip ? (type === 'RDP' ? String(target.ip) + ':4443' : String(target.ip)) : '-';
+  const ip = target.ip ? (type === 'RDP' ? String(target.ip) + ':' + (target.rdp_port || 4443) : String(target.ip)) : '-';
   const label = action === 'on' ? 'TURN ON' : 'TURN OFF';
   await safeMessageEditor.editMessage(bot, chatId, messageId, '⏳ Memproses ' + label + ' ' + type + '...\nIP: ' + ip + '\nDroplet ID: ' + target.droplet_id, {
     reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin_power_menu' }]] }
@@ -794,12 +764,12 @@ module.exports = {
   showPriceSpecMenu,
   showInstallPriceMenu,
   showAdminServiceList,
+  showAdminServiceListByApi,
   showAdminBackupServiceList,
   showDoStatusMenu,
   showDoStatus,
   showAllDoStatus,
   showPowerServiceList,
-  showPowerServiceListForApi,
   showPowerActionMenu,
   executePowerAction
 };

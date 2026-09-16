@@ -1,5 +1,23 @@
 const axios = require('axios');
 
+// UpCloud adapter — di-import di sini supaya semua dispatcher (getSizes,
+// getRegions, getImages, createDroplet, waitPublicIp, deleteDroplet) bisa
+// route ke UpCloud kalau token-nya prefix `ucat_`. Ini bikin Cloud9 & handler
+// lain otomatis support UpCloud tanpa harus diubah.
+const {
+  isUpCloudToken,
+  upcloudGetZones,
+  upcloudGetPlans,
+  upcloudGetImages,
+  upcloudCreateServer,
+  upcloudWaitPublicIp,
+  upcloudPower,
+  upcloudDeleteServer,
+  upcloudProbeAuth,
+  upcloudAccountInfo,
+  upcloudServersCount,
+} = require('./upcloudApi');
+
 const DO_API = 'https://api.digitalocean.com/v2';
 const LINODE_API = 'https://api.linode.com/v4';
 const AWS_EC2_HOST = (region) => `ec2.${region}.amazonaws.com`;
@@ -74,7 +92,24 @@ function sanitizeLinodeLabel(name) {
 
 function providerName(token) {
   if (isAwsToken(token)) return 'AWS';
-  return isLinodeToken(token) ? 'Linode' : 'DigitalOcean';
+  if (isLinodeToken(token)) return 'Linode';
+  if (isUpCloudToken(token)) return 'UpCloud';
+  return 'DigitalOcean';
+}
+
+// Port RDP per-provider.
+// UpCloud Public Firewall (enabled default di trial, default rule = Drop all)
+// sudah punya accept rule bawaan untuk TCP 3389 (RDP standar) TAPI TIDAK untuk
+// 4443. Karena trial tidak bisa nambah rule custom dengan mudah, UpCloud pakai
+// 3389 supaya lolos firewall default tanpa modifikasi apapun.
+// Provider lain (DO/AWS/Linode) tetap 4443: DO/Linode tidak ada firewall
+// default, AWS security group di-manage bot (buka 4443).
+const RDP_PORT_DEFAULT = 4443;
+// UpCloud: port 8443 juga termasuk accept rule di firewall default UpCloud
+// (dikonfirmasi user). Dipakai untuk RDP UpCloud menggantikan 3389.
+const RDP_PORT_UPCLOUD = 8443;
+function rdpPortForToken(token) {
+  return isUpCloudToken(token) ? RDP_PORT_UPCLOUD : RDP_PORT_DEFAULT;
 }
 
 function headers(token) {
@@ -158,27 +193,6 @@ function normalizeLinodeImage(image) {
   return 'linode/ubuntu22.04';
 }
 
-// Cache kapabilitas region Linode (mis. "Metadata"). Capabilities bersifat
-// per-region dan tidak berubah, jadi aman di-cache selama proses hidup.
-const linodeRegionCapCache = new Map();
-async function linodeRegionSupportsMetadata(token, region) {
-  if (!region) return false;
-  const key = String(region);
-  if (linodeRegionCapCache.has(key)) return linodeRegionCapCache.get(key);
-  try {
-    const r = await axios.get(`${LINODE_API}/regions/${encodeURIComponent(key)}`, { headers: headers(token), timeout: 20000 });
-    const caps = Array.isArray(r.data?.capabilities) ? r.data.capabilities : [];
-    const supported = caps.some(c => String(c).toLowerCase() === 'metadata');
-    linodeRegionCapCache.set(key, supported);
-    return supported;
-  } catch (_) {
-    // Kalau gagal cek, anggap tidak didukung agar tidak mengandalkan cloud-init
-    // yang mungkin tak pernah jalan (menyebabkan SSH password gagal di region tsb).
-    linodeRegionCapCache.set(key, false);
-    return false;
-  }
-}
-
 async function linodeCreateInstance(token, name, region, type, image, rootPass, userData) {
   try {
     const payload = {
@@ -194,23 +208,13 @@ async function linodeCreateInstance(token, name, region, type, image, rootPass, 
       booted: true
     };
 
-    // Linode API menerima cloud-init lewat metadata.user_data dan WAJIB base64,
-    // TAPI layanan Metadata hanya tersedia di sebagian region. Di region tanpa
-    // Metadata, mengirim user_data tidak berpengaruh (cloud-init tak pernah jalan)
-    // sehingga ssh_pwauth/PermitRootLogin tak aktif dan bot gagal login password.
-    // Karena itu: hanya lampirkan user_data bila region mendukung Metadata.
-    // Bila tidak, kita andalkan root_pass + default image Linode (yang sudah
-    // mengizinkan login root via password) supaya installer tetap bisa masuk.
+    // Linode API menerima cloud-init lewat metadata.user_data dan wajib base64.
+    // Tanpa ini, setting ssh_pwauth/PermitRootLogin dari bot tidak pernah dijalankan,
+    // sehingga SSH terlihat hanya menerima key-auth dan bot gagal auth password.
     if (userData && String(userData).trim()) {
-      const metaOk = await linodeRegionSupportsMetadata(token, region);
-      if (metaOk) {
-        payload.metadata = {
-          user_data: Buffer.from(String(userData), 'utf8').toString('base64')
-        };
-      } else {
-        console.warn(`[LINODE] Region ${region} tidak mendukung Metadata service. ` +
-          `Lewati cloud-init user_data; mengandalkan root_pass + default image agar SSH password tetap bisa dipakai.`);
-      }
+      payload.metadata = {
+        user_data: Buffer.from(String(userData), 'utf8').toString('base64')
+      };
     }
 
     const r = await axios.post(`${LINODE_API}/linode/instances`, payload, { headers: headers(token), timeout: 60000 });
@@ -660,6 +664,7 @@ async function awsInstancesCount(token) {
 async function getSizes(token) {
   if (isAwsToken(token)) return awsGetSizesStatic();
   if (isLinodeToken(token)) return await linodeGetTypes(token);
+  if (isUpCloudToken(token)) return await upcloudGetPlans(token);
   const all = [];
   let page = 1;
 
@@ -691,6 +696,10 @@ async function getSizesForRegion(token, regionSlug) {
   const sizes = await getSizes(token);
   if (isAwsToken(token)) return sizes;
   if (isLinodeToken(token)) return sizes;
+  // UpCloud plans (Cloud Native) tersedia di semua zone tanpa filter regions.
+  // Kita return semua plans as-is supaya UI Spesifikasi tidak kosong setelah
+  // user pilih region. Ini fix untuk "VPS ga respon setelah pilih region".
+  if (isUpCloudToken(token)) return sizes;
   return sizes.filter(s => {
     const regions = Array.isArray(s.regions) ? s.regions : [];
     return regions.includes(regionSlug);
@@ -700,6 +709,7 @@ async function getSizesForRegion(token, regionSlug) {
 async function getRegions(token) {
   if (isAwsToken(token)) return awsGetRegionsStatic();
   if (isLinodeToken(token)) return await linodeGetRegions(token);
+  if (isUpCloudToken(token)) return await upcloudGetZones(token);
   const r = await axios.get(`${DO_API}/regions`, { headers: headers(token), timeout: 30000 });
   return (r.data.regions || []).filter(x => x.available);
 }
@@ -707,6 +717,7 @@ async function getRegions(token) {
 async function getImages(token) {
   if (isAwsToken(token)) return awsGetImagesStatic();
   if (isLinodeToken(token)) return await linodeGetImages(token);
+  if (isUpCloudToken(token)) return await upcloudGetImages(token);
   const r = await axios.get(`${DO_API}/images?type=distribution`, { headers: headers(token), timeout: 30000 });
   const images = [];
   for (const img of (r.data.images || [])) {
@@ -727,6 +738,21 @@ async function createDroplet(token, name, region, size, image, userData) {
     const parsedPass = parseRootPasswordFromCloudInit(userData);
     const rootPass = isStrongLinodeRootPassword(parsedPass) ? parsedPass : randomRootPassword();
     return await linodeCreateInstance(token, name, region, size, image || 'linode/ubuntu22.04', rootPass, userData);
+  }
+  if (isUpCloudToken(token)) {
+    // UpCloud: image slug diabaikan di adapter (selalu clone Ubuntu 22.04
+    // public template). Auth via SSH key (satu-satunya login method untuk
+    // cloud-init templates per docs). Adapter return sshPrivateKey +
+    // sshUsername; handler wajib teruskan ke installDedicatedRDP via
+    // installConfig.privateKey supaya SSH auth berhasil.
+    const r = await upcloudCreateServer(token, name, region, size, image, userData);
+    return {
+      dropletId: r.dropletId,
+      error: r.error,
+      sshPrivateKey: r.sshPrivateKey || null,
+      sshUsername: r.sshUsername || 'root',
+      provider: 'upcloud',
+    };
   }
   try {
     const r = await axios.post(
@@ -763,13 +789,8 @@ function randomRootPassword() {
 
 async function waitPublicIp(token, dropletId, attempts = 20, delayMs = 10000, regionOverride = null) {
   if (isAwsToken(token)) return await awsWaitPublicIp(token, dropletId, attempts, delayMs, regionOverride);
-  if (isLinodeToken(token)) {
-    // Linode sering butuh waktu boot lebih lama daripada DigitalOcean sebelum IPv4
-    // publik muncul. Beri jatah minimal ~7,5 menit supaya droplet tidak keburu
-    // dihapus (premature delete) padahal sebenarnya hanya lambat boot.
-    const linodeAttempts = Math.max(attempts, 45);
-    return await linodeWaitPublicIp(token, dropletId, linodeAttempts, delayMs);
-  }
+  if (isLinodeToken(token)) return await linodeWaitPublicIp(token, dropletId, attempts, delayMs);
+  if (isUpCloudToken(token)) return await upcloudWaitPublicIp(token, dropletId, attempts, delayMs);
   for (let i = 0; i < attempts; i++) {
     await new Promise(r => setTimeout(r, delayMs));
     const r = await axios.get(`${DO_API}/droplets/${dropletId}`, { headers: headers(token), timeout: 30000 });
@@ -783,6 +804,14 @@ async function waitPublicIp(token, dropletId, attempts = 20, delayMs = 10000, re
 async function powerDroplet(token, dropletId, action, regionOverride = null) {
   if (isAwsToken(token)) return await awsPower(token, dropletId, action, regionOverride);
   if (isLinodeToken(token)) return await linodePower(token, dropletId, action);
+  if (isUpCloudToken(token)) {
+    try {
+      const ok = await upcloudPower(token, dropletId, action);
+      return { ok: !!ok, error: null };
+    } catch (err) {
+      return { ok: false, error: (err && err.message) || 'UpCloud power error' };
+    }
+  }
   try {
     const type = action === 'on' ? 'power_on' : 'power_off';
     const r = await axios.post(`${DO_API}/droplets/${dropletId}/actions`, { type }, { headers: headers(token), timeout: 30000 });
@@ -798,6 +827,10 @@ async function powerDroplet(token, dropletId, action, regionOverride = null) {
 async function deleteDroplet(token, dropletId, regionOverride = null) {
   if (isAwsToken(token)) return await awsDelete(token, dropletId, regionOverride);
   if (isLinodeToken(token)) return await linodeDelete(token, dropletId);
+  if (isUpCloudToken(token)) {
+    const r = await upcloudDeleteServer(token, dropletId);
+    return !!(r && r.success);
+  }
   try {
     const r = await axios.delete(`${DO_API}/droplets/${dropletId}`, { headers: headers(token), timeout: 30000 });
     return r.status === 204;
@@ -808,6 +841,10 @@ async function deleteDroplet(token, dropletId, regionOverride = null) {
 
 // Fetch account email for a given DigitalOcean API token
 async function getAccountEmail(token) {
+  if (isUpCloudToken(token)) {
+    const info = await upcloudAccountInfo(token);
+    return info.ok && info.account ? info.account.email : null;
+  }
   if (isAwsToken(token)) return await awsAccountEmail(token);
   if (isLinodeToken(token)) {
     try {
@@ -845,6 +882,7 @@ async function getAccountEmail(token) {
 
 
 async function getAccountInfo(token) {
+  if (isUpCloudToken(token)) return await upcloudAccountInfo(token);
   if (isAwsToken(token)) return await awsAccountInfo(token);
   if (isLinodeToken(token)) {
     try {
@@ -883,6 +921,16 @@ async function getAccountInfo(token) {
 }
 
 async function getCustomerBalance(token) {
+  if (isUpCloudToken(token)) {
+    const info = await upcloudAccountInfo(token);
+    const credits = info.ok && info.account ? info.account.credits : null;
+    return {
+      ok: info.ok,
+      balance: { account_balance: credits != null ? String(credits) : '-', month_to_date_balance: '-', month_to_date_usage: '-', generated_at: new Date().toISOString() },
+      error: info.error || null,
+      statusCode: info.statusCode || null,
+    };
+  }
   if (isAwsToken(token)) return { ok: true, balance: { account_balance: '-', month_to_date_balance: '-', month_to_date_usage: '-', generated_at: new Date().toISOString() }, error: null, statusCode: 200 };
   if (isLinodeToken(token)) {
     try {
@@ -908,6 +956,7 @@ async function getCustomerBalance(token) {
 }
 
 async function getDropletsCount(token) {
+  if (isUpCloudToken(token)) return await upcloudServersCount(token);
   if (isAwsToken(token)) return await awsInstancesCount(token);
   if (isLinodeToken(token)) {
     try {
@@ -946,7 +995,7 @@ async function getDropletsCount(token) {
 }
 
 async function getBillingHistory(token) {
-  if (isAwsToken(token) || isLinodeToken(token)) return { ok: true, entries: [], error: null };
+  if (isAwsToken(token) || isLinodeToken(token) || isUpCloudToken(token)) return { ok: true, entries: [], error: null };
   try {
     const entries = [];
     let page = 1;
@@ -1053,7 +1102,11 @@ module.exports = {
   getAccountHealth,
   isLinodeToken,
   isAwsToken,
+  isUpCloudToken,
   makeAwsToken,
   parseAwsToken,
-  providerName
+  providerName,
+  rdpPortForToken,
+  RDP_PORT_DEFAULT,
+  RDP_PORT_UPCLOUD
 };
