@@ -734,8 +734,17 @@ async function processAddApi(bot, msg, sessionManager) {
   await bot.sendMessage(chatId, `⏳ Mengecek dan menyimpan API ${label} renter...`);
   try {
     const res = await renterManager.addApi(chatId, msg.text, provider);
+    const returnTo = sess.returnTo;
     sessionManager.clearAdminSession(chatId);
-    await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
+    if (returnTo === 'open_api_rdp') {
+      // Jalur Install RDP via API sendiri: tawarkan lanjut langsung pilih region.
+      await bot.sendMessage(chatId,
+        `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}`,
+        { reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
+      );
+    } else {
+      await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
+    }
   } catch (e) {
     await bot.sendMessage(chatId, `❌ Gagal menambahkan API ${label}. ${e.message === 'INVALID_AWS_FORMAT' ? 'Format AWS harus ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION' : (e.message || '')}`);
   }
@@ -1385,9 +1394,58 @@ async function processAdminRemove(bot, msg, sessionManager) {
   await bot.sendMessage(chatId, `✅ Penyewa ${uid} berhasil dihapus.`);
 }
 
+// ============================================================
+// "Install RDP pakai API cloud sendiri" — entry TERBUKA (tanpa gate renter).
+// Dipakai oleh menu Install RDP (dedicatedRdpHandler) sebagai alternatif dari
+// input kredensial VPS manual. Sengaja TIDAK memanggil requireRenter: fungsi
+// tengah rantai (pickApi/pickRegionFirst/pickSize/createRdp) memang tidak
+// ter-gate dan hanya butuh token dari renterManager.getApiToken, sehingga
+// callback renter_rdp_api/regionpick/sizepick/win yang sudah ada bisa dipakai.
+// ============================================================
+async function startOpenApiRdp(bot, chatId, messageId, sessionManager) {
+  const apis = await renterManager.listApis(chatId, true);
+  if (!apis.length) {
+    return safeMessageEditor.editMessage(bot, chatId, messageId,
+      '🔑 *Install RDP via API Cloud Sendiri*\n\n' +
+      'Kamu belum punya API cloud tersimpan. Tambahkan token API dari provider kamu ' +
+      '(VPS akan dibuat & RDP diinstall otomatis di akun cloud milikmu sendiri):',
+      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
+        [{ text: '➕ API DigitalOcean', callback_data: 'open_api_add:digitalocean' }],
+        [{ text: '➕ API Linode', callback_data: 'open_api_add:linode' }],
+        [{ text: '➕ API AWS', callback_data: 'open_api_add:aws' }],
+        [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
+      ] } }
+    );
+  }
+  // Reuse callback renter_rdp_api:<apiId> yang sudah ter-route (pickApi non-gated).
+  const kb = apis.map(a => ([{ text: apiLabel(a), callback_data: `renter_rdp_api:${a.id}` }]));
+  kb.push([{ text: '➕ Tambah API lain', callback_data: 'open_api_add:digitalocean' }]);
+  kb.push([{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]);
+  return safeMessageEditor.editMessage(bot, chatId, messageId,
+    '🔑 *Install RDP via API Cloud Sendiri*\n\nPilih API cloud yang akan dipakai untuk membuat VPS + install RDP:',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+}
+
+async function promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider = 'digitalocean') {
+  const p = String(provider || 'digitalocean').toLowerCase();
+  const label = p === 'aws' ? 'AWS' : (p === 'linode' ? 'Linode' : 'DigitalOcean');
+  // returnTo dipakai processAddApi untuk menawarkan tombol lanjut setelah sukses.
+  sessionManager.setAdminSession(chatId, { action: 'renter_add_api', provider: p, messageId, returnTo: 'open_api_rdp' });
+  const extra = p === 'aws'
+    ? '\n\nFormat AWS:\n`ACCESS_KEY_ID|SECRET_ACCESS_KEY|REGION`\nContoh: `AKIAxxxx|secretxxxx|us-east-1`'
+    : '';
+  return safeMessageEditor.editMessage(bot, chatId, messageId,
+    `🔑 Masukkan token/API ${label} kamu:${extra}\n\nToken akan dihapus dari chat setelah dikirim.`, {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'install_src_api' }]] }
+  });
+}
+
 module.exports = {
   showRentOffer,
   startRentPurchase,
+  startOpenApiRdp,
+  promptOpenApiAdd,
   refreshRentPayment,
   cancelRentPayment,
   showStartChoice,
