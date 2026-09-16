@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const TelegramBot = require('node-telegram-bot-api');
 const { scheduleJob } = require('node-schedule');
-const { handleInstallDedicatedRDP, handleDedicatedVPSCredentials, showDedicatedOSSelection, handleDedicatedOSSelection, handleDedicatedAuthSelection } = require('./handlers/dedicatedRdpHandler');
+const { handleInstallDedicatedRDP, showManualCredsPrompt, handleDedicatedVPSCredentials, showDedicatedOSSelection, handleDedicatedOSSelection, handleDedicatedAuthSelection } = require('./handlers/dedicatedRdpHandler');
 const { handleDeposit, handleDepositQris, handleDepositAmount, handlePendingPayment } = require('./handlers/depositHandler');
 const { handleAddBalance, processAddBalance, handleBroadcast, processBroadcast, handleAtlanticAdmin } = require('./handlers/adminHandler');
 const cryptoDepositHandler = require('./handlers/cryptoDepositHandler');
@@ -278,6 +278,16 @@ bot.on('callback_query', async (query) => {
         }
         else if (data === 'install_dedicated_rdp') {
             await handleInstallDedicatedRDP(bot, chatId, messageId, sessionManager);
+        }
+        else if (data === 'install_src_manual') {
+            await showManualCredsPrompt(bot, chatId, messageId, sessionManager);
+        }
+        else if (data === 'install_src_api') {
+            await renterHandler.startOpenApiRdp(bot, chatId, messageId, sessionManager);
+        }
+        else if (data.startsWith('open_api_add:')) {
+            const provider = data.split(':')[1] || 'digitalocean';
+            await renterHandler.promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider);
         }
         else if (data === 'show_windows_selection') {
             await showWindowsSelection(bot, chatId, messageId, 0);
@@ -1058,8 +1068,12 @@ Set *allowed_ips* = \`0.0.0.0/0\` (atau IP VPS bot) supaya request bot bisa dite
             await vpsAdmin.showAdminBackupServiceList(bot, chatId, messageId, page);
         }
         else if (data === 'vps_admin_power_menu' || data.startsWith('vps_admin_power_menu:')) {
-            const page = data.includes(':') ? Number(data.split(':')[1] || 0) : 0;
-            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, page);
+            // Sekarang menampilkan pemilih API dulu (4a).
+            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, 0);
+        }
+        else if (data.startsWith('vps_power_api:')) {
+            const parts = data.split(':');
+            await vpsAdmin.showPowerServiceListForApi(bot, chatId, messageId, parts[1], Number(parts[2] || 0));
         }
         else if (data.startsWith('vps_power_pick:')) {
             const parts = data.split(':');

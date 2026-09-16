@@ -38,15 +38,48 @@ async function handleInstallDedicatedRDP(bot, chatId, messageId, sessionManager,
   session.chargePending = !isFreeRenter && !isAdmin(chatId);
   session.freeForRenter = isFreeRenter;
 
-  const msg = await bot.editMessageText(
-    '🖥️ Instalasi RDP Dedicated\n\n' +
+  // Simpan konteks biaya/flag; STEP dipilih setelah user memilih sumber instalasi.
+  session.messageId = messageId;
+  delete session.step;
+  sessionManager.setUserSession(chatId, session);
+
+  // BARU (4c): tawarkan pilihan sumber VPS untuk RDP.
+  return bot.editMessageText(
+    '🖥️ *Instalasi RDP Dedicated*\n\n' +
     `💰 Harga: ${isFreeRenter ? 'GRATIS (Penyewa)' : 'Rp ' + installCost.toLocaleString('id-ID')}\n` +
-    '🔒 Port: 4443 (custom untuk keamanan)\n\n' +
+    '🔒 Port RDP: 4443 (UpCloud: 8443)\n\n' +
+    'Pilih sumber VPS untuk RDP:\n\n' +
+    '1️⃣ *Kredensial VPS manual* — kamu sudah punya VPS, tinggal masukkan IP + user + password.\n' +
+    '2️⃣ *API cloud sendiri* — bot otomatis membuat VPS di akun cloud milikmu (DigitalOcean/Linode/AWS/UpCloud) lalu install RDP, seperti menu renter.',
+    {
+      chat_id: chatId,
+      message_id: messageId,
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [{ text: '1️⃣ Pakai kredensial VPS manual', callback_data: 'install_src_manual' }],
+          [{ text: '2️⃣ Pakai API cloud sendiri', callback_data: 'install_src_api' }],
+          [{ text: '❌ Batal', callback_data: 'cancel_installation' }]
+        ]
+      }
+    }
+  );
+}
+
+// Prompt input kredensial VPS manual (langkah pertama: IP). Dipisah agar bisa
+// dipanggil setelah user memilih "kredensial VPS manual".
+async function showManualCredsPrompt(bot, chatId, messageId, sessionManager) {
+  const session = sessionManager.getUserSession(chatId) || {};
+  session.installType = 'dedicated';
+
+  const msg = await bot.editMessageText(
+    '🖥️ Instalasi RDP Dedicated (Kredensial VPS Manual)\n\n' +
+    '🔒 Port RDP: 4443 (UpCloud: 8443)\n\n' +
     '📋 Spesifikasi Minimal:\n' +
     '• ⚡ CPU: 1 Core\n' +
     '• 💾 RAM: 1 GB\n' +
     '• 💽 Storage: 20 GB\n\n' +
-    '🌐 IP VPS:\n' +
+    '🌐 Masukkan IP VPS:\n' +
     'IP akan dihapus otomatis setelah dikirim\n\n' +
     '⚠️ PENTING: VPS Wajib Fresh Install Ubuntu 24.04 LTS',
     {
@@ -55,7 +88,7 @@ async function handleInstallDedicatedRDP(bot, chatId, messageId, sessionManager,
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [{ text: '❌ Batal', callback_data: 'cancel_installation' }]
+          [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }, { text: '❌ Batal', callback_data: 'cancel_installation' }]
         ]
       }
     }
@@ -719,6 +752,7 @@ async function handleRDPCallbacks(bot, query, userSessions) {
 
 module.exports = {
   handleInstallDedicatedRDP,
+  showManualCredsPrompt,
   handleDedicatedVPSCredentials,
   showDedicatedOSSelection,
   handleDedicatedOSSelection,
