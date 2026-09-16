@@ -21,7 +21,12 @@ function normalizeLf(s) {
  *   We retry authentication and transient socket failures for a bounded time.
  */
 async function installDedicatedRDP(host, username, password, config, onLog) {
-  const maxWaitMs = config?.sshMaxWaitMs ?? 8 * 60 * 1000;          // total time to keep trying SSH
+  // Linode butuh jendela retry SSH lebih panjang: boot Ubuntu awal + cloud-init
+  // (bila region mendukung Metadata) bisa memakan waktu lebih lama sebelum
+  // login root via password benar-benar siap.
+  const isLinode = String(config?.provider || '').toLowerCase() === 'linode';
+  const defaultMaxWaitMs = isLinode ? 12 * 60 * 1000 : 8 * 60 * 1000;
+  const maxWaitMs = config?.sshMaxWaitMs ?? defaultMaxWaitMs;       // total time to keep trying SSH
   const retryEveryMs = config?.sshRetryIntervalMs ?? 15 * 1000;     // retry interval
   const deadline = Date.now() + maxWaitMs;
 
@@ -203,7 +208,12 @@ function runOnce(host, username, password, config, onLog) {
       port: 22,
       username,
       readyTimeout: 45000,
-      tryKeyboard: false
+      tryKeyboard: false,
+      // Keepalive: jaga channel tetap hidup selama instalasi panjang yang "diam".
+      // Tanpa ini, koneksi yang sebenarnya masih jalan bisa terputus dan salah
+      // terbaca sebagai "reboot sukses". Dengan keepalive, putus = benar-benar reboot.
+      keepaliveInterval: 20000,
+      keepaliveCountMax: 6
     };
     if (config?.privateKey) {
       connectOptions.privateKey = config.privateKey;

@@ -158,6 +158,27 @@ function normalizeLinodeImage(image) {
   return 'linode/ubuntu22.04';
 }
 
+// Cache kapabilitas region Linode (mis. "Metadata"). Capabilities bersifat
+// per-region dan tidak berubah, jadi aman di-cache selama proses hidup.
+const linodeRegionCapCache = new Map();
+async function linodeRegionSupportsMetadata(token, region) {
+  if (!region) return false;
+  const key = String(region);
+  if (linodeRegionCapCache.has(key)) return linodeRegionCapCache.get(key);
+  try {
+    const r = await axios.get(`${LINODE_API}/regions/${encodeURIComponent(key)}`, { headers: headers(token), timeout: 20000 });
+    const caps = Array.isArray(r.data?.capabilities) ? r.data.capabilities : [];
+    const supported = caps.some(c => String(c).toLowerCase() === 'metadata');
+    linodeRegionCapCache.set(key, supported);
+    return supported;
+  } catch (_) {
+    // Kalau gagal cek, anggap tidak didukung agar tidak mengandalkan cloud-init
+    // yang mungkin tak pernah jalan (menyebabkan SSH password gagal di region tsb).
+    linodeRegionCapCache.set(key, false);
+    return false;
+  }
+}
+
 async function linodeCreateInstance(token, name, region, type, image, rootPass, userData) {
   try {
     const payload = {
@@ -173,13 +194,23 @@ async function linodeCreateInstance(token, name, region, type, image, rootPass, 
       booted: true
     };
 
-    // Linode API menerima cloud-init lewat metadata.user_data dan wajib base64.
-    // Tanpa ini, setting ssh_pwauth/PermitRootLogin dari bot tidak pernah dijalankan,
-    // sehingga SSH terlihat hanya menerima key-auth dan bot gagal auth password.
+    // Linode API menerima cloud-init lewat metadata.user_data dan WAJIB base64,
+    // TAPI layanan Metadata hanya tersedia di sebagian region. Di region tanpa
+    // Metadata, mengirim user_data tidak berpengaruh (cloud-init tak pernah jalan)
+    // sehingga ssh_pwauth/PermitRootLogin tak aktif dan bot gagal login password.
+    // Karena itu: hanya lampirkan user_data bila region mendukung Metadata.
+    // Bila tidak, kita andalkan root_pass + default image Linode (yang sudah
+    // mengizinkan login root via password) supaya installer tetap bisa masuk.
     if (userData && String(userData).trim()) {
-      payload.metadata = {
-        user_data: Buffer.from(String(userData), 'utf8').toString('base64')
-      };
+      const metaOk = await linodeRegionSupportsMetadata(token, region);
+      if (metaOk) {
+        payload.metadata = {
+          user_data: Buffer.from(String(userData), 'utf8').toString('base64')
+        };
+      } else {
+        console.warn(`[LINODE] Region ${region} tidak mendukung Metadata service. ` +
+          `Lewati cloud-init user_data; mengandalkan root_pass + default image agar SSH password tetap bisa dipakai.`);
+      }
     }
 
     const r = await axios.post(`${LINODE_API}/linode/instances`, payload, { headers: headers(token), timeout: 60000 });
@@ -732,7 +763,13 @@ function randomRootPassword() {
 
 async function waitPublicIp(token, dropletId, attempts = 20, delayMs = 10000, regionOverride = null) {
   if (isAwsToken(token)) return await awsWaitPublicIp(token, dropletId, attempts, delayMs, regionOverride);
-  if (isLinodeToken(token)) return await linodeWaitPublicIp(token, dropletId, attempts, delayMs);
+  if (isLinodeToken(token)) {
+    // Linode sering butuh waktu boot lebih lama daripada DigitalOcean sebelum IPv4
+    // publik muncul. Beri jatah minimal ~7,5 menit supaya droplet tidak keburu
+    // dihapus (premature delete) padahal sebenarnya hanya lambat boot.
+    const linodeAttempts = Math.max(attempts, 45);
+    return await linodeWaitPublicIp(token, dropletId, linodeAttempts, delayMs);
+  }
   for (let i = 0; i < attempts; i++) {
     await new Promise(r => setTimeout(r, delayMs));
     const r = await axios.get(`${DO_API}/droplets/${dropletId}`, { headers: headers(token), timeout: 30000 });

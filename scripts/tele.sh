@@ -203,13 +203,34 @@ fi
 # Validasi URL image tanpa membocorkan detail ke Telegram; output hanya di terminal remote.
 # Beberapa provider baru (terutama AWS) DNS/network-nya baru stabil beberapa menit
 # setelah cloud-init selesai. Retry supaya install pertama tidak gagal lalu baru berhasil saat rebuild.
+# Cek ketersediaan URL. Sebagian server memblokir HEAD (curl -I) sehingga preflight
+# lama sering false-negative padahal GET sebenarnya jalan. Karena itu: coba HEAD dulu,
+# lalu fallback GET 1 byte (range 0-0) yang jauh lebih andal.
+url_reachable() {
+  local u="$1"
+  curl -fsIL --connect-timeout 20 --max-time 60 "$u" >/dev/null 2>&1 && return 0
+  curl -fsSL --connect-timeout 20 --max-time 90 -r 0-0 -o /dev/null "$u" >/dev/null 2>&1 && return 0
+  return 1
+}
+
 echo "Testing image URL..."
+# Kandidat: URL asli + varian HTTPS dari host yang sama (lebih tahan blokir/MITM di
+# sebagian region/provider). Kalau salah satu bisa diakses, pakai itu.
+URL_CANDIDATES=("$IMG_URL")
+case "$IMG_URL" in
+  http://*) URL_CANDIDATES+=("https://${IMG_URL#http://}") ;;
+esac
+
 URL_OK=0
 for i in $(seq 1 12); do
-  if curl -fsIL --connect-timeout 20 --max-time 90 "$IMG_URL" >/dev/null 2>&1; then
-    URL_OK=1
-    break
-  fi
+  for cand in "${URL_CANDIDATES[@]}"; do
+    if url_reachable "$cand"; then
+      IMG_URL="$cand"
+      URL_OK=1
+      break
+    fi
+  done
+  [ "$URL_OK" = "1" ] && break
   echo "Image URL belum bisa diakses, retry $i/12 dalam 20 detik..."
   sleep 20
   # refresh DNS/network stack ringan
@@ -220,6 +241,7 @@ if [ "$URL_OK" != "1" ]; then
   echo "Image URL not accessible from this VPS/provider after retries. Try another Windows image/version or mirror."
   exit 1
 fi
+echo "Image URL OK: $IMG_URL"
 
 # Perintah install. Jangan pakai eval untuk password; gunakan array.
 echo "Running reinstall.sh with provider-compatible parameters..."
