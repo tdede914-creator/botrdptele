@@ -634,8 +634,11 @@ function powerSourceForRow(r) {
   return r.source === 'renter' ? 'renter' : 'normal';
 }
 
+// STEP 1 (baru): pilih API/akun cloud dulu, sama seperti pola menu Hapus VPS & List VPS.
+// Tujuan: admin tidak lagi langsung dibanjiri semua VPS+RDP dari semua API sekaligus.
 async function showPowerServiceList(bot, chatId, messageId, page = 0) {
   if (!isAdmin(chatId)) return;
+
   const rows = (await vpsManager.listAllActiveInstances()).filter(r => r.droplet_id);
   if (!rows.length) {
     return safeMessageEditor.editMessage(bot, chatId, messageId, '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nTidak ada droplet aktif yang bisa di ON/OFF.', {
@@ -643,6 +646,69 @@ async function showPowerServiceList(bot, chatId, messageId, page = 0) {
       reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin' }]] }
     });
   }
+
+  // Hitung jumlah server per API (admin) + total server milik penyewa (renter).
+  // api_id pada baris renter merujuk ke renter_do_api (id space berbeda), jadi
+  // penyewa dikelompokkan terpisah agar tidak salah cocok dengan do_api admin.
+  const adminCount = new Map(); // api_id -> jumlah
+  let renterCount = 0;
+  for (const r of rows) {
+    if (r.source === 'renter') { renterCount++; continue; }
+    const key = Number(r.api_id || 0);
+    adminCount.set(key, (adminCount.get(key) || 0) + 1);
+  }
+
+  const apis = await vpsManager.listDoApis();
+  const kb = [];
+  for (const a of apis) {
+    const cnt = adminCount.get(Number(a.id)) || 0;
+    if (cnt <= 0) continue; // hanya tampilkan API yang punya server aktif
+    const base = vpsManager.formatApiLabel ? vpsManager.formatApiLabel(a) : (a.email ? `${a.email} - API#${a.id}` : `API#${a.id}`);
+    const label = (Number(a.status) === 1) ? base : `⛔ ${base} (DISABLED)`;
+    kb.push([{ text: `${label} • ${cnt} server`, callback_data: `vps_power_api:${a.id}:0` }]);
+  }
+
+  // Tampilkan juga API yang punya server tapi sudah tidak ada di daftar do_api (mis. API terhapus).
+  const knownIds = new Set(apis.map(a => Number(a.id)));
+  for (const [key, cnt] of adminCount.entries()) {
+    if (key && !knownIds.has(key) && cnt > 0) {
+      kb.push([{ text: `API#${key} • ${cnt} server`, callback_data: `vps_power_api:${key}:0` }]);
+    }
+  }
+
+  if (renterCount > 0) {
+    kb.push([{ text: `👥 Server Penyewa (Renter) • ${renterCount} server`, callback_data: 'vps_power_api:renter:0' }]);
+  }
+
+  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
+
+  return safeMessageEditor.editMessage(bot, chatId, messageId,
+    '🔌 *TURN ON / TURN OFF VPS&RDP*\n\n1️⃣ Pilih API/akun cloud dulu, lalu daftar server dari API itu akan muncul:', {
+    parse_mode: 'Markdown',
+    reply_markup: { inline_keyboard: kb }
+  });
+}
+
+// STEP 2 (baru): daftar server milik satu API (atau kelompok penyewa) untuk di-ON/OFF.
+// apiKey berupa angka (id do_api) ATAU string 'renter'.
+async function showPowerServiceListForApi(bot, chatId, messageId, apiKey, page = 0) {
+  if (!isAdmin(chatId)) return;
+
+  const isRenter = String(apiKey) === 'renter';
+  const rows = (await vpsManager.listAllActiveInstances()).filter(r => {
+    if (!r.droplet_id) return false;
+    if (isRenter) return r.source === 'renter';
+    return r.source !== 'renter' && Number(r.api_id) === Number(apiKey);
+  });
+
+  if (!rows.length) {
+    return safeMessageEditor.editMessage(bot, chatId, messageId,
+      '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nTidak ada server aktif untuk pilihan ini.', {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [[{ text: '« Kembali', callback_data: 'vps_admin_power_menu' }]] }
+    });
+  }
+
   const perPage = 12;
   const totalPages = Math.max(1, Math.ceil(rows.length / perPage));
   const safePage = Math.min(Math.max(Number(page) || 0, 0), totalPages - 1);
@@ -653,13 +719,17 @@ async function showPowerServiceList(bot, chatId, messageId, page = 0) {
     const src = powerSourceForRow(r);
     return [{ text: type + ' ' + ip + ' | Buyer ' + (r.user_id || '-'), callback_data: 'vps_power_pick:' + src + ':' + r.id }];
   });
+
   const nav = [];
-  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: 'vps_admin_power_menu:' + (safePage - 1) });
+  if (safePage > 0) nav.push({ text: '⬅️ Prev', callback_data: 'vps_power_api:' + apiKey + ':' + (safePage - 1) });
   nav.push({ text: (safePage + 1) + '/' + totalPages, callback_data: 'noop' });
-  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: 'vps_admin_power_menu:' + (safePage + 1) });
+  if (safePage < totalPages - 1) nav.push({ text: 'Next ➡️', callback_data: 'vps_power_api:' + apiKey + ':' + (safePage + 1) });
   if (totalPages > 1) kb.push(nav);
-  kb.push([{ text: '« Kembali', callback_data: 'vps_admin' }]);
-  return safeMessageEditor.editMessage(bot, chatId, messageId, '🔌 *TURN ON / TURN OFF VPS&RDP*\n\nPilih server yang ingin dinyalakan/dimatikan:', {
+  kb.push([{ text: '« Pilih API lain', callback_data: 'vps_admin_power_menu' }]);
+
+  const header = isRenter ? '👥 Server Penyewa (Renter)' : ('API#' + apiKey);
+  return safeMessageEditor.editMessage(bot, chatId, messageId,
+    '🔌 *TURN ON / TURN OFF VPS&RDP*\n\n📂 ' + header + '\n2️⃣ Pilih server yang ingin dinyalakan/dimatikan:', {
     parse_mode: 'Markdown',
     reply_markup: { inline_keyboard: kb }
   });
@@ -729,6 +799,7 @@ module.exports = {
   showDoStatus,
   showAllDoStatus,
   showPowerServiceList,
+  showPowerServiceListForApi,
   showPowerActionMenu,
   executePowerAction
 };

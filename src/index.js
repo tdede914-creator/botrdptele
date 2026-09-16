@@ -1035,8 +1035,13 @@ Contoh region: \`us-east-1\`, \`ap-southeast-1\``, {
             await vpsAdmin.showAdminBackupServiceList(bot, chatId, messageId, page);
         }
         else if (data === 'vps_admin_power_menu' || data.startsWith('vps_admin_power_menu:')) {
-            const page = data.includes(':') ? Number(data.split(':')[1] || 0) : 0;
-            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, page);
+            // Sekarang ini menampilkan pemilih API dulu (page diabaikan pada step API).
+            await vpsAdmin.showPowerServiceList(bot, chatId, messageId, 0);
+        }
+        else if (data.startsWith('vps_power_api:')) {
+            // vps_power_api:<apiId|'renter'>:<page>
+            const parts = data.split(':');
+            await vpsAdmin.showPowerServiceListForApi(bot, chatId, messageId, parts[1], Number(parts[2] || 0));
         }
         else if (data.startsWith('vps_power_pick:')) {
             const parts = data.split(':');
