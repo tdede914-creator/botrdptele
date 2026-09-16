@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment & secrets — JANGAN pernah commit kredensial asli
+.env
+.env.local
+*.env
+
+# Database SQLite (berisi data user/saldo — jangan di-commit)
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Log & runtime
+*.log
+logs/
+tmp/
+*.pid
+
+# Arsip source lama (source kini berupa file biasa)
+botrdp.zip
+*.tgz
+*.rar
+*.zip
+
+# Scratch / hasil ekstraksi sementara
+extracted/
+
+# OS
+.DS_Store
+Thumbs.db
