@@ -73,33 +73,22 @@ function normalizeAwsRdpSize(sizeSlug) {
 }
 
 
-// Picu Linode Direct Disk berdasar event reboot NYATA, bukan jam tetap.
-// installPromise resolve tepat saat SSH terputus (= reinstall.sh memicu reboot ke Alpine),
-// jadi itu momen paling tepat untuk mengganti kernel agar boot berikutnya masuk Windows.
-// Menset terlalu dini (cara lama 5/7/9 menit sejak create) bisa membuat boot nyangkut di grub>.
-function scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip, installPromise) {
+// Linode Direct Disk: pakai jadwal tetap 5/7/9 menit dari saat installer mulai.
+// JANGAN memicu pada reboot pertama (saat SSH putus) — reboot itu dipakai reinstall.sh
+// untuk masuk Alpine & menulis Windows; mengganti kernel saat itu membuat boot gagal
+// (connection timeout). Jadwal 5/7/9 menit memberi Alpine waktu menulis lebih dulu.
+function scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip) {
   if (!isLinodeToken(token) || !dropletId) return;
-  const setDD = async (tag) => {
+  const run = (minutes) => setTimeout(async () => {
     try {
       const dd = await linodeSetDirectDisk(token, dropletId);
-      if (!dd.ok) console.warn(`[RENTER ${ip}] Gagal set Linode Direct Disk (${tag}):`, dd.error);
-      else console.log(`[RENTER ${ip}] Linode Direct Disk diset (${tag}) untuk boot Windows.`);
+      if (!dd.ok) console.warn(`[RENTER ${ip}] Gagal set Linode Direct Disk (${minutes}m):`, dd.error);
+      else console.log(`[RENTER ${ip}] Linode Direct Disk diset otomatis (${minutes}m) untuk boot Windows.`);
     } catch (e) {
-      console.warn(`[RENTER ${ip}] Gagal set Linode Direct Disk (${tag}):`, e.message || e);
+      console.warn(`[RENTER ${ip}] Gagal set Linode Direct Disk (${minutes}m):`, e.message || e);
     }
-  };
-  const runRetries = () => {
-    setDD('reboot+0s');
-    setTimeout(() => setDD('reboot+90s'), 90 * 1000);
-    setTimeout(() => setDD('reboot+180s'), 180 * 1000);
-    setTimeout(() => setDD('reboot+300s'), 300 * 1000);
-  };
-  if (installPromise && typeof installPromise.then === 'function') {
-    installPromise.then(runRetries).catch(() => setTimeout(() => setDD('fallback+240s'), 240 * 1000));
-  } else {
-    // Fallback bila dipanggil tanpa promise (kompatibilitas): pakai jeda aman.
-    setTimeout(runRetries, 5 * 60 * 1000);
-  }
+  }, minutes * 60 * 1000);
+  [5, 7, 9].forEach(run);
 }
 
 async function waitForPort(host, port, totalMs = 12 * 60 * 1000, intervalMs = 15000) {
@@ -924,7 +913,7 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
       }
       const installProvider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean');
       const installPromise = installDedicatedRDP(ip, 'root', rootPass, { osVersion: selectedOS.version, password: rdpPass, provider: installProvider }, (logMessage) => console.log(`[RENTER ${ip}] ${logMessage}`));
-      scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip, installPromise);
+      scheduleLinodeDirectDiskIfNeeded(token, dropletId, ip);
       await installPromise;
       const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);
       const rdpResult = await monitor.waitForRDPReady(rdpPasswordUtil.RDP_MONITOR_TIMEOUT_MS, (statusMessage) => console.log(`[RENTER ${ip}] ${statusMessage}`));

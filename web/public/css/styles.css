@@ -95,4 +95,8 @@ input:focus,select:focus{outline:none;border-color:var(--accent)}
 .dot{width:9px;height:9px;border-radius:50%;background:var(--card-brd)}
 .step.done .dot{background:var(--ok)} .step.active .dot{background:var(--accent)}
 .copy{cursor:pointer;color:var(--accent);font-size:12px;margin-left:6px}
+.pbar{height:10px;background:rgba(255,255,255,.08);border-radius:999px;overflow:hidden;margin:10px 0 6px}
+.pbar-fill{height:100%;background:var(--grad);width:0;transition:width .5s ease}
+.jobcard{border:1px solid var(--card-brd);border-radius:12px;padding:14px;margin-bottom:10px;background:rgba(0,0,0,.18)}
+.joblog{margin-top:10px;max-height:130px;overflow:auto;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:11px;color:var(--muted);background:rgba(0,0,0,.28);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-word}
 @media(max-width:900px){.hero{grid-template-columns:1fr;padding:30px 0}.hero h1{font-size:38px}.features,.grid-2,.grid-3{grid-template-columns:1fr}}

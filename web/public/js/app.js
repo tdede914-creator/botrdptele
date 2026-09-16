@@ -24,12 +24,13 @@ async function refreshBalance() {
 }
 
 // ---------- tabs ----------
-$$('.tab').forEach((t) => t.addEventListener('click', () => {
-  $$('.tab').forEach((x) => x.classList.remove('active'));
-  t.classList.add('active');
+function activateTab(name) {
+  $$('.tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === name));
   $$('.tabpane').forEach((p) => p.classList.add('hidden'));
-  $('#tab-' + t.dataset.tab).classList.remove('hidden');
-}));
+  const pane = $('#tab-' + name);
+  if (pane) pane.classList.remove('hidden');
+}
+$$('.tab').forEach((t) => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
 $('#logout').addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' });
@@ -66,37 +67,68 @@ async function loadTx() {
   } catch (_) { box.innerHTML = '<span class="muted">Gagal memuat.</span>'; }
 }
 
-// ---------- job polling ----------
-function renderJob(container, job) {
-  let html = '';
+// ---------- job registry (persist across refresh via localStorage) ----------
+const LS_JOBS = 'kobong_jobs';
+const jobCache = {};
+let pollTimer = null;
+function lsGetJobs() { try { return JSON.parse(localStorage.getItem(LS_JOBS) || '[]'); } catch (_) { return []; } }
+function lsSetJobs(a) { localStorage.setItem(LS_JOBS, JSON.stringify(a.slice(-6))); }
+function trackJob(id) { const a = lsGetJobs(); if (!a.includes(id)) { a.push(id); lsSetJobs(a); } ensurePolling(); renderActiveJobs(); }
+function untrackJob(id) { lsSetJobs(lsGetJobs().filter((x) => x !== id)); delete jobCache[id]; renderActiveJobs(); }
+window.dismissJob = untrackJob;
+
+function ensurePolling() { if (pollTimer) return; pollTimer = setInterval(pollAll, 4000); pollAll(); }
+async function pollAll() {
+  const ids = lsGetJobs();
+  if (!ids.length) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } renderActiveJobs(); return; }
+  let anyActive = false;
+  for (const id of ids) {
+    try {
+      const { ok, job } = await api('/api/job/' + id);
+      if (ok && job) { jobCache[id] = job; if (!FINAL.includes(job.status)) anyActive = true; }
+      else { lsSetJobs(lsGetJobs().filter((x) => x !== id)); delete jobCache[id]; } // expired di server
+    } catch (_) {}
+  }
+  renderActiveJobs();
+  if (!anyActive) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } refreshBalance(); loadMine(); }
+}
+function jobCardHtml(job) {
+  const pct = Math.max(0, Math.min(100, Number(job.progress) || 0));
   const spinning = !FINAL.includes(job.status);
-  const tag = job.status === 'ready' ? 'ok' : (job.status === 'failed' ? 'err' : 'warn');
-  html += `<div class="notice ${tag === 'ok' ? 'ok' : (tag === 'err' ? 'err' : 'info')}">`;
-  html += spinning ? `<span class="spinner"></span> ` : (job.status === 'ready' ? '✅ ' : (job.status === 'failed' ? '❌ ' : '⚠️ '));
-  html += job.message + '</div>';
+  const kind = job.kind === 'install' ? 'Install RDP (VPS sendiri)' : 'Order RDP';
+  const tag = job.status === 'ready' ? '<span class="tag ok">SELESAI</span>'
+    : (job.status === 'failed' ? '<span class="tag err">GAGAL</span>'
+    : (job.status === 'installing_timeout' ? '<span class="tag warn">CEK MANUAL</span>' : '<span class="tag warn">PROSES</span>'));
+  let h = `<div class="jobcard">
+    <div class="row-flex" style="justify-content:space-between">
+      <div><b>${kind}</b> ${tag}</div>
+      <div>${spinning ? '<span class="spinner"></span>' : ''} <span class="copy" onclick="dismissJob('${job.id}')">tutup</span></div>
+    </div>
+    <div class="pbar"><div class="pbar-fill" style="width:${pct}%"></div></div>
+    <div class="muted" style="font-size:13px">${pct}% · ${job.message || ''}</div>`;
   if (job.server && (job.status === 'ready' || job.status === 'installing_timeout')) {
     const s = job.server;
-    html += `<div class="card" style="margin-top:10px"><h3>Detail RDP</h3>
+    h += `<div style="margin-top:10px">
       <div class="server-row"><span class="muted">Server</span><span class="mono">${s.ip}:${s.port} ${copyBtn(s.ip)}</span></div>
       <div class="server-row"><span class="muted">Username</span><span class="mono">${s.username}</span></div>
       <div class="server-row"><span class="muted">Password</span><span class="mono">${s.password} ${copyBtn(s.password)}</span></div>
       ${s.os ? `<div class="server-row"><span class="muted">Windows</span><span class="mono">${s.os}</span></div>` : ''}
     </div>`;
   }
-  container.innerHTML = html;
+  if (job.logs && job.logs.length) {
+    h += `<div class="joblog">${job.logs.map((l) => String(l).replace(/</g, '&lt;')).join('\n')}</div>`;
+  }
+  h += `</div>`;
+  return h;
 }
-async function pollJob(jobId, container) {
-  container.classList.remove('hidden');
-  const tick = async () => {
-    try {
-      const { ok, job } = await api('/api/job/' + jobId);
-      if (!ok) { container.innerHTML = '<div class="notice err">Job tidak ditemukan.</div>'; return; }
-      renderJob(container, job);
-      if (FINAL.includes(job.status)) { refreshBalance(); loadMine(); return; }
-    } catch (_) {}
-    setTimeout(tick, 5000);
-  };
-  tick();
+function renderActiveJobs() {
+  const ids = lsGetJobs();
+  const card = $('#active-jobs-card');
+  const box = $('#active-jobs');
+  if (!box) return;
+  if (!ids.length) { if (card) card.classList.add('hidden'); return; }
+  if (card) card.classList.remove('hidden');
+  box.innerHTML = ids.map((id) => (jobCache[id] ? jobCardHtml(jobCache[id]) : '')).join('') || '<span class="muted">Memuat…</span>';
 }
 
 // ---------- order ----------
@@ -168,8 +200,9 @@ $('#o-submit').addEventListener('click', async (e) => {
   try {
     const res = await api('/api/rdp/order', { method: 'POST', body: JSON.stringify({ productId, regionSlug: region, osId, durationDays, customPassword }) });
     if (!res.ok) { notice($('#order-msg'), 'err', res.error || 'Gagal order.'); btn.disabled = false; return; }
-    notice($('#order-msg'), '', '');
-    pollJob(res.jobId, $('#order-progress'));
+    notice($('#order-msg'), 'ok', '✅ Order diterima! Progres instalasi tampil di Dashboard → “Proses Berjalan” (tetap ada walau halaman di-refresh).');
+    trackJob(res.jobId);
+    activateTab('dashboard');
     refreshBalance();
   } catch (_) { notice($('#order-msg'), 'err', 'Terjadi kesalahan.'); }
   btn.disabled = false;
@@ -194,8 +227,9 @@ $('#i-submit').addEventListener('click', async (e) => {
   try {
     const res = await api('/api/rdp/install', { method: 'POST', body: JSON.stringify({ ip, sshUser, sshPassword, osVersion, rdpPassword }) });
     if (!res.ok) { notice($('#install-msg'), 'err', res.error || 'Gagal.'); btn.disabled = false; return; }
-    notice($('#install-msg'), '', '');
-    pollJob(res.jobId, $('#install-progress'));
+    notice($('#install-msg'), 'ok', '✅ Instalasi dimulai! Progres tampil di Dashboard → “Proses Berjalan” (tetap ada walau halaman di-refresh).');
+    trackJob(res.jobId);
+    activateTab('dashboard');
     refreshBalance();
   } catch (_) { notice($('#install-msg'), 'err', 'Terjadi kesalahan.'); }
   btn.disabled = false;
@@ -240,5 +274,8 @@ $('#dep-submit').addEventListener('click', async (e) => {
     await loadTx();
     await loadProducts();
     await loadOsList();
+    // Resume proses yang sedang berjalan (persist saat refresh).
+    renderActiveJobs();
+    if (lsGetJobs().length) ensurePolling();
   } catch (_) {}
 })();

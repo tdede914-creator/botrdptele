@@ -452,36 +452,25 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
         provider: isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean')
       }, (logMessage) => console.log(`[${ip}] ${logMessage}`));
 
-      // Linode: kernel harus diganti ke Direct Disk agar boot BERIKUTNYA masuk Windows.
-      // MASALAH LAMA: dijadwalkan pada jam tetap (5/7/9 menit sejak VPS dibuat), padahal
-      // tele.sh bisa butuh ~9 menit (cloud-init + apt-lock + tes URL image) sebelum
-      // reinstall.sh benar-benar memicu reboot ke Alpine. Kalau Direct Disk diset terlalu
-      // dini, boot berikutnya nyangkut di prompt grub> -> instalasi gagal.
-      // PERBAIKAN: picu Direct Disk berdasar event reboot NYATA. installPromise resolve
-      // tepat saat SSH terputus (= reinstall.sh memicu reboot ke Alpine). Set saat itu,
-      // lalu ulangi beberapa kali (config kernel hanya berpengaruh pada boot berikutnya,
-      // jadi aman diset selagi Alpine masih menulis Windows).
+      // Linode: setelah tele.sh memicu boot Alpine, kernel harus diganti ke Direct Disk
+      // SEBELUM Alpine selesai menulis Windows dan reboot lagi. Jika terlambat, Linode berhenti di prompt grub>.
+      //
+      // PENTING: JANGAN memicu Direct Disk pada event reboot pertama (saat SSH putus).
+      // Reboot itu justru dipakai reinstall.sh untuk MASUK ke Alpine & mulai menulis Windows.
+      // Mengganti kernel ke direct-disk saat itu membuat mesin coba boot disk yang belum
+      // berisi Windows -> SSH mati -> connection timeout. Jadwal tetap 5/7/9 menit (dari
+      // saat installer mulai) terbukti bekerja: Alpine sempat boot & menulis dulu.
       if (isLinodeToken(token)) {
-        const setDD = async (tag) => {
+        const scheduleLinodeDirectDisk = (minutes) => setTimeout(async () => {
           try {
             const dd = await linodeSetDirectDisk(token, dropletId);
-            if (!dd.ok) console.warn(`[${ip}] Gagal set Linode Direct Disk (${tag}):`, dd.error);
-            else console.log(`[${ip}] Linode Direct Disk diset (${tag}) untuk boot Windows.`);
+            if (!dd.ok) console.warn(`[${ip}] Gagal set Linode Direct Disk (${minutes}m):`, dd.error);
+            else console.log(`[${ip}] Linode Direct Disk diset otomatis (${minutes}m) untuk boot Windows.`);
           } catch (e) {
-            console.warn(`[${ip}] Gagal set Linode Direct Disk (${tag}):`, e.message || e);
+            console.warn(`[${ip}] Gagal set Linode Direct Disk (${minutes}m):`, e.message || e);
           }
-        };
-        installPromise
-          .then(() => {
-            setDD('reboot+0s');
-            setTimeout(() => setDD('reboot+90s'), 90 * 1000);
-            setTimeout(() => setDD('reboot+180s'), 180 * 1000);
-            setTimeout(() => setDD('reboot+300s'), 300 * 1000);
-          })
-          .catch(() => {
-            // Installer gagal/tak sempat reboot; fallback tetap coba set agar tidak nyangkut GRUB.
-            setTimeout(() => setDD('fallback+240s'), 240 * 1000);
-          });
+        }, minutes * 60 * 1000);
+        [5, 7, 9].forEach(scheduleLinodeDirectDisk);
       }
 
       const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);

@@ -86,14 +86,47 @@ function waitForPort(host, port, totalMs = 12 * 60 * 1000, intervalMs = 15000) {
 
 // ---- in-memory job tracker untuk progres provisioning (dipoll frontend) ----
 const jobs = new Map(); // jobId -> { status, step, message, server, createdAt, userId }
-function newJob(userId) {
+function newJob(userId, kind) {
   const id = crypto.randomBytes(9).toString('hex');
-  jobs.set(id, { id, userId: String(userId), status: 'pending', step: 'init', message: 'Menyiapkan...', server: null, createdAt: Date.now() });
+  jobs.set(id, { id, userId: String(userId), kind: kind || 'order', status: 'pending', step: 'init', message: 'Menyiapkan...', progress: 2, logs: [], server: null, createdAt: Date.now() });
   // auto-clean setelah 2 jam
   setTimeout(() => jobs.delete(id), 2 * 60 * 60 * 1000).unref?.();
   return id;
 }
 function setJob(id, patch) { const j = jobs.get(id); if (j) Object.assign(j, patch); }
+function pushLog(id, line) {
+  const j = jobs.get(id); if (!j) return;
+  j.logs = j.logs || [];
+  j.logs.push(String(line).replace(/\s+/g, ' ').trim().slice(0, 160));
+  if (j.logs.length > 14) j.logs.shift();
+}
+// Logger fase install: tangkap persentase dari output tele.sh (mis. "... 42%").
+function mkInstallLogger(jobId, tag) {
+  return (m) => {
+    console.log(`[${tag}] ${m}`);
+    const j = jobs.get(jobId); if (!j) return;
+    pushLog(jobId, m);
+    const pm = String(m).match(/(\d{1,3})\s*%/);
+    if (pm) {
+      const pct = Math.min(100, Number(pm[1]));
+      j.progress = Math.max(Number(j.progress) || 0, 35 + Math.round(pct * 0.35)); // 35 -> 70
+    }
+  };
+}
+// Logger fase monitoring: "Attempt X/Y" -> progres 70..99.
+function mkMonitorLogger(jobId, tag) {
+  return (s) => {
+    console.log(`[${tag}] ${s}`);
+    const j = jobs.get(jobId); if (!j) return;
+    pushLog(jobId, s);
+    const am = String(s).match(/Attempt\s+(\d+)\/(\d+)/i);
+    if (am) {
+      const x = Number(am[1]), y = Number(am[2]) || 50;
+      j.progress = Math.max(Number(j.progress) || 0, Math.min(99, 70 + Math.round((x / y) * 29)));
+      j.message = `Menunggu Windows boot & RDP siap (cek ${x}/${y})...`;
+    }
+  };
+}
 function getJob(id, userId) {
   const j = jobs.get(id);
   if (!j) return null;
@@ -179,8 +212,8 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
     return { ok: false, error: 'Slot untuk durasi ini sudah habis.' };
   }
 
-  const jobId = newJob(uid);
-  setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Membuat VPS...' });
+  const jobId = newJob(uid, 'order');
+  setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Membuat VPS...', progress: 8 });
 
   // Jalankan provisioning async.
   (async () => {
@@ -196,7 +229,7 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
         return;
       }
 
-      setJob(jobId, { step: 'wait_ip', message: 'Menunggu IP publik...' });
+      setJob(jobId, { step: 'wait_ip', message: 'Menunggu IP publik...', progress: 15 });
       const ip = await waitPublicIp(token, dropletId, 20, 10000, regionSlug);
       if (!ip) {
         try { await deleteDroplet(token, dropletId, regionSlug); } catch (_) {}
@@ -216,7 +249,7 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
       // Potong saldo hanya setelah VPS berhasil dibuat (slot sudah direserve).
       if (!isAdmin(uid)) await deductBalance(uid, totalCost);
 
-      setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+      setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
 
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
       if (!sshReady) {
@@ -224,25 +257,32 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
         return;
       }
 
-      setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...' });
+      setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
       const provider = isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : 'digitalocean');
-      const installPromise = installDedicatedRDP(ip, 'root', rootPass, { osVersion: selectedOS.version, password: rdpPass, provider }, (m) => console.log(`[web ${ip}] ${m}`));
+      const installPromise = installDedicatedRDP(ip, 'root', rootPass, { osVersion: selectedOS.version, password: rdpPass, provider }, mkInstallLogger(jobId, `web ${ip}`));
 
-      // Linode Direct Disk dipicu event reboot nyata (sama seperti perbaikan 4b).
+      // Linode Direct Disk: jadwal tetap 5/7/9 menit dari saat installer mulai (cara lama
+      // yang terbukti bekerja). JANGAN picu pada reboot pertama (SSH putus) — reboot itu
+      // dipakai reinstall.sh untuk masuk Alpine & menulis Windows; switch kernel saat itu
+      // membuat boot gagal (connection timeout).
       if (isLinodeToken(token)) {
-        const setDD = async (tag) => { try { await linodeSetDirectDisk(token, dropletId); } catch (e) { console.warn(`[web ${ip}] DD ${tag}`, e.message || e); } };
-        installPromise.then(() => { setDD('r+0'); setTimeout(() => setDD('r+90'), 90000); setTimeout(() => setDD('r+180'), 180000); setTimeout(() => setDD('r+300'), 300000); }).catch(() => setTimeout(() => setDD('fb+240'), 240000));
+        const scheduleDD = (minutes) => setTimeout(async () => {
+          try { await linodeSetDirectDisk(token, dropletId); console.log(`[web ${ip}] Linode Direct Disk diset (${minutes}m).`); }
+          catch (e) { console.warn(`[web ${ip}] DD ${minutes}m`, e.message || e); }
+        }, minutes * 60 * 1000);
+        [5, 7, 9].forEach(scheduleDD);
       }
 
       await installPromise;
+      setJob(jobId, { step: 'monitor', message: 'Menunggu Windows boot & RDP siap...', progress: 70 });
       const monitor = new RDPMonitor(ip, 'root', rootPass, rdpPass, 4443);
-      const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, (s) => console.log(`[web ${ip}] ${s}`));
+      const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, mkMonitorLogger(jobId, `web ${ip}`));
       try { monitor.disconnect(); } catch (_) {}
 
       if (result && result.success && result.rdpReady) {
-        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi. VPS sudah dibuat; cek beberapa menit lagi atau rebuild.', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       }
     } catch (e) {
       console.error('[web] orderRdp provisioning error:', e);
@@ -288,8 +328,8 @@ async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, 
     charged = true;
   }
 
-  const jobId = newJob(uid);
-  setJob(jobId, { status: 'installing', step: 'installing', message: 'Menginstall Windows RDP...', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+  const jobId = newJob(uid, 'install');
+  setJob(jobId, { status: 'installing', step: 'wait_ssh', message: 'Menghubungi VPS (SSH)...', progress: 20, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
 
   (async () => {
     try {
@@ -299,15 +339,17 @@ async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, 
         setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'Tidak bisa konek SSH ke VPS (port 22). Saldo dikembalikan.' });
         return;
       }
-      const installPromise = installDedicatedRDP(ip, sshUser || 'root', sshPassword, { osVersion: os.version, password: rdpPass, provider: provider || 'digitalocean' }, (m) => console.log(`[web-install ${ip}] ${m}`));
+      setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
+      const installPromise = installDedicatedRDP(ip, sshUser || 'root', sshPassword, { osVersion: os.version, password: rdpPass, provider: provider || 'digitalocean' }, mkInstallLogger(jobId, `web-install ${ip}`));
       await installPromise;
+      setJob(jobId, { step: 'monitor', message: 'Menunggu Windows boot & RDP siap...', progress: 70 });
       const monitor = new RDPMonitor(ip, sshUser || 'root', sshPassword, rdpPass, 4443);
-      const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, (s) => console.log(`[web-install ${ip}] ${s}`));
+      const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, mkMonitorLogger(jobId, `web-install ${ip}`));
       try { monitor.disconnect(); } catch (_) {}
       if (result && result.success && result.rdpReady) {
-        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi. Cek beberapa menit lagi.', server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
       }
     } catch (e) {
       console.error('[web] installOnExisting error:', e);
