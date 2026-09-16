@@ -18,6 +18,7 @@ const db = require('./db');
 const auth = require('./auth');
 const rdpService = require('./services/rdpService');
 const depositService = require('./services/depositService');
+const checkoutService = require('./services/checkoutService');
 const { getUser, getBalance, isAdmin } = require('../src/utils/userManager');
 
 const PORT = Number(process.env.WEB_PORT || 3000);
@@ -116,19 +117,19 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true });
       }
 
-      // Authenticated
+      // Login OPSIONAL: uid boleh null (tamu). Endpoint RDP/checkout bisa dipakai tamu;
+      // pembayaran otomatis pakai saldo (bila login & cukup) atau QRIS (tamu/saldo kurang).
       const uid = sessionUser(req);
-      if (!uid) return sendJson(res, 401, { ok: false, error: 'Belum login.' });
 
-      if (p === '/api/me' && req.method === 'GET') {
-        const bal = await getBalance(uid);
-        return sendJson(res, 200, { ok: true, telegramId: uid, balance: typeof bal === 'string' ? bal : Number(bal), isAdmin: isAdmin(uid) });
-      }
+      // ---- Endpoint yang boleh diakses tamu ----
       if (p === '/api/rdp/products' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, products: await rdpService.listProducts() });
       }
       if (p === '/api/rdp/os' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, osList: rdpService.osOptions() });
+      }
+      if (p === '/api/rdp/install-cost' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, installCost: await rdpService.getInstallCost() });
       }
       if (p === '/api/rdp/options' && req.method === 'GET') {
         const ram = parsed.searchParams.get('ram');
@@ -139,21 +140,34 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/rdp/order' && req.method === 'POST') {
         const body = await readBody(req);
         if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
-        return sendJson(res, 200, await rdpService.orderRdp(uid, body));
+        return sendJson(res, 200, await checkoutService.startOrder(uid, body));
       }
       if (p === '/api/rdp/install' && req.method === 'POST') {
         const body = await readBody(req);
         if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
-        return sendJson(res, 200, await rdpService.installOnExisting(uid, body));
+        return sendJson(res, 200, await checkoutService.startInstall(uid, body));
       }
-      if (p === '/api/rdp/mine' && req.method === 'GET') {
-        return sendJson(res, 200, { ok: true, servers: await rdpService.listMyRdp(uid) });
+      if (p === '/api/checkout/status' && req.method === 'GET') {
+        const trx = parsed.searchParams.get('trx');
+        if (!trx) return sendJson(res, 400, { ok: false, error: 'trx wajib.' });
+        return sendJson(res, 200, { ok: true, ...(await checkoutService.status(trx)) });
       }
       if (p.startsWith('/api/job/') && req.method === 'GET') {
         const jobId = p.split('/')[3];
-        const job = rdpService.getJob(jobId, uid);
+        const job = rdpService.getJob(jobId);
         if (!job) return sendJson(res, 404, { ok: false, error: 'Job tidak ditemukan.' });
         return sendJson(res, 200, { ok: true, job });
+      }
+
+      // ---- Endpoint yang WAJIB login ----
+      if (!uid) return sendJson(res, 401, { ok: false, error: 'Belum login.' });
+
+      if (p === '/api/me' && req.method === 'GET') {
+        const bal = await getBalance(uid);
+        return sendJson(res, 200, { ok: true, telegramId: uid, balance: typeof bal === 'string' ? bal : Number(bal), isAdmin: isAdmin(uid) });
+      }
+      if (p === '/api/rdp/mine' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, servers: await rdpService.listMyRdp(uid) });
       }
       if (p === '/api/tx' && req.method === 'GET') {
         let rows = [];

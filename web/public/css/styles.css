@@ -99,4 +99,7 @@ input:focus,select:focus{outline:none;border-color:var(--accent)}
 .pbar-fill{height:100%;background:var(--grad);width:0;transition:width .5s ease}
 .jobcard{border:1px solid var(--card-brd);border-radius:12px;padding:14px;margin-bottom:10px;background:rgba(0,0,0,.18)}
 .joblog{margin-top:10px;max-height:130px;overflow:auto;font-family:ui-monospace,'SF Mono',Menlo,monospace;font-size:11px;color:var(--muted);background:rgba(0,0,0,.28);border-radius:8px;padding:8px;white-space:pre-wrap;word-break:break-word}
+.modal{position:fixed;inset:0;background:rgba(3,6,15,.72);backdrop-filter:blur(4px);display:flex;align-items:center;justify-content:center;z-index:50;padding:20px}
+.modal-box{background:#0f1629;border:1px solid var(--card-brd);border-radius:18px;padding:26px;max-width:400px;width:100%;box-shadow:0 30px 80px rgba(0,0,0,.5)}
+.modal-box h3{font-size:19px;margin-bottom:6px}
 @media(max-width:900px){.hero{grid-template-columns:1fr;padding:30px 0}.hero h1{font-size:38px}.features,.grid-2,.grid-3{grid-template-columns:1fr}}

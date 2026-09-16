@@ -127,11 +127,10 @@ function mkMonitorLogger(jobId, tag) {
     }
   };
 }
-function getJob(id, userId) {
-  const j = jobs.get(id);
-  if (!j) return null;
-  if (String(j.userId) !== String(userId)) return null;
-  return j;
+// Akses job berbasis jobId saja (jobId = token acak tak tertebak). Ini memungkinkan
+// tamu (tanpa sesi) memantau prosesnya, dan persist saat refresh via localStorage.
+function getJob(id) {
+  return jobs.get(id) || null;
 }
 
 // ---- katalog produk RDP (identik dgn menu bot) ----
@@ -168,49 +167,56 @@ async function getOrderOptions(ram, core, durationDays) {
   };
 }
 
-/**
- * Buat + install RDP dari katalog (auto-provision). Mengembalikan { ok, jobId }.
- * Provisioning berjalan async; frontend memantau via getJob().
- */
-async function orderRdp(userId, { productId, regionSlug, osId, durationDays, customPassword }) {
-  const uid = String(userId);
-  const d = Number(durationDays);
+// Biaya jasa install RDP (sama dengan bot: admin_settings dedicated_install_rdp_cost).
+async function getInstallCost() {
+  return await adminSettings.getNumber('dedicated_install_rdp_cost', DEDICATED_INSTALLATION_COST);
+}
+
+// Hitung harga order untuk (produk, durasi) + validasi slot & harga.
+async function getOrderAmount(productId, durationDays) {
   const prod = await vpsManager.getProduct(productId);
   if (!prod) return { ok: false, error: 'Produk tidak ditemukan.' };
-
+  const d = Number(durationDays);
   const slotAvail = (d === 1) ? Number(prod.slot_daily || 0) : (d === 7 ? Number(prod.slot_weekly || 0) : Number(prod.slot_monthly || 0));
   if (slotAvail <= 0) return { ok: false, error: 'Slot untuk durasi ini sudah habis.' };
+  const price = (d === 1) ? Number(prod.price_daily) : (d === 7 ? Number(prod.price_weekly) : Number(prod.price));
+  if (!price) return { ok: false, error: 'Harga untuk durasi ini belum di-set admin.' };
+  return { ok: true, amount: price, prod };
+}
+async function reserveOrderSlot(productId, durationDays) {
+  try {
+    const dec = await vpsManager.decrementProductSlotDuration(productId, Number(durationDays));
+    if (dec && dec.changes === 0) return false;
+    return true;
+  } catch (_) { return false; }
+}
+async function releaseOrderSlot(productId, durationDays) {
+  try { await vpsManager.incrementProductSlotDuration(productId, Number(durationDays)); } catch (_) {}
+}
+
+/**
+ * Provision Order RDP. ASUMSI: slot SUDAH direserve & pembayaran SUDAH beres.
+ * TIDAK memotong saldo. opts.refund = { uid, amount } untuk mengembalikan saldo
+ * bila gagal SEBELUM VPS jadi (hanya untuk pembayar yang login). uid = pemilik
+ * (tamu = 0). Mengembalikan { ok, jobId }.
+ */
+async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, customPassword }, opts = {}) {
+  uid = String(uid || 0);
+  const d = Number(durationDays);
+  const prod = await vpsManager.getProduct(productId);
+  if (!prod) { await releaseOrderSlot(productId, d); return { ok: false, error: 'Produk tidak ditemukan.' }; }
 
   const selectedOS = getStandardDedicatedOs().find((o) => o.id === Number(osId));
-  if (!selectedOS) return { ok: false, error: 'OS Windows tidak valid.' };
-
-  const basePrice = (d === 1) ? Number(prod.price_daily) : (d === 7 ? Number(prod.price_weekly) : Number(prod.price));
-  if (!basePrice) return { ok: false, error: 'Harga untuk durasi ini belum di-set admin.' };
-  const totalCost = basePrice;
-
-  if (!isAdmin(uid)) {
-    const bal = await getBalance(uid);
-    const numericBal = typeof bal === 'string' ? 0 : Number(bal);
-    if (numericBal < totalCost) return { ok: false, error: `Saldo tidak cukup. Butuh Rp ${totalCost.toLocaleString('id-ID')}.` };
-  }
+  if (!selectedOS) { await releaseOrderSlot(productId, d); return { ok: false, error: 'OS Windows tidak valid.' }; }
 
   const token = await vpsManager.getDoApiToken(prod.api_id);
-  if (!token) return { ok: false, error: 'API cloud tidak ditemukan.' };
+  if (!token) { await releaseOrderSlot(productId, d); return { ok: false, error: 'API cloud tidak ditemukan.' }; }
 
-  let rdpPass;
-  if (customPassword && validateWindowsPassword(customPassword).ok) rdpPass = customPassword;
-  else rdpPass = genWindowsPassword();
+  const rdpPass = (customPassword && validateWindowsPassword(customPassword).ok) ? customPassword : genWindowsPassword();
   const rootPass = genAlphaNum(12);
   const cloudInit = rootCloudInit(rootPass);
   const hostname = `rdp-${uid}-${genAlphaNum(6).toLowerCase()}`;
-
-  // Reserve slot dulu (hindari oversell). Kembalikan jika gagal.
-  try {
-    const dec = await vpsManager.decrementProductSlotDuration(productId, d);
-    if (dec && dec.changes === 0) return { ok: false, error: 'Slot untuk durasi ini sudah habis.' };
-  } catch (_) {
-    return { ok: false, error: 'Slot untuk durasi ini sudah habis.' };
-  }
+  const refund = (opts.refund && opts.refund.uid) ? opts.refund : null;
 
   const jobId = newJob(uid, 'order');
   setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Membuat VPS...', progress: 8 });
@@ -224,8 +230,9 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
       const created = await createDroplet(token, hostname, regionSlug, createSizeSlug, baseImage, cloudInit);
       dropletId = created.dropletId;
       if (!dropletId) {
-        try { await vpsManager.incrementProductSlotDuration(productId, d); } catch (_) {}
-        setJob(jobId, { status: 'failed', step: 'create_vps', message: 'Gagal membuat VPS: ' + (created.error || 'unknown') });
+        await releaseOrderSlot(productId, d);
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'create_vps', message: 'Gagal membuat VPS: ' + (created.error || 'unknown') + (refund ? ' (saldo dikembalikan).' : '') });
         return;
       }
 
@@ -233,8 +240,9 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
       const ip = await waitPublicIp(token, dropletId, 20, 10000, regionSlug);
       if (!ip) {
         try { await deleteDroplet(token, dropletId, regionSlug); } catch (_) {}
-        try { await vpsManager.incrementProductSlotDuration(productId, d); } catch (_) {}
-        setJob(jobId, { status: 'failed', step: 'wait_ip', message: 'IP VPS belum tersedia. Coba region lain.' });
+        await releaseOrderSlot(productId, d);
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'wait_ip', message: 'IP VPS belum tersedia. Coba region lain.' + (refund ? ' (saldo dikembalikan).' : '') });
         return;
       }
 
@@ -245,9 +253,6 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
         region: regionSlug, image: `rdp:${selectedOS.version}`, rootPassword: rdpPass,
         expiresAt, durationDays: d
       });
-
-      // Potong saldo hanya setelah VPS berhasil dibuat (slot sudah direserve).
-      if (!isAdmin(uid)) await deductBalance(uid, totalCost);
 
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
 
@@ -285,7 +290,7 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
         setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       }
     } catch (e) {
-      console.error('[web] orderRdp provisioning error:', e);
+      console.error('[web] provisionOrder error:', e);
       setJob(jobId, { status: 'failed', step: 'error', message: 'Terjadi kesalahan: ' + (e.message || e) });
     }
   })();
@@ -294,10 +299,12 @@ async function orderRdp(userId, { productId, regionSlug, osId, durationDays, cus
 }
 
 /**
- * Install RDP di VPS yang SUDAH ADA (kredensial manual). Mengembalikan { ok, jobId }.
+ * Provision Install RDP di VPS milik user (kredensial manual). ASUMSI: pembayaran
+ * sudah beres. TIDAK memotong saldo. opts.refund = { uid, amount } untuk refund bila
+ * gagal konek SSH (hanya pembayar login). uid = pemilik (tamu = 0).
  */
-async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, rdpPassword, provider }) {
-  const uid = String(userId);
+async function provisionInstall(uid, { ip, sshUser, sshPassword, osVersion, rdpPassword, provider }, opts = {}) {
+  uid = String(uid || 0);
   const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
   if (!ipRegex.test(String(ip || ''))) return { ok: false, error: 'Format IP tidak valid.' };
   if (!sshPassword) return { ok: false, error: 'Password SSH VPS wajib diisi.' };
@@ -312,21 +319,7 @@ async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, 
   } else {
     rdpPass = genWindowsPassword();
   }
-
-  const installCost = await adminSettings.getNumber('dedicated_install_rdp_cost', DEDICATED_INSTALLATION_COST);
-  if (!isAdmin(uid)) {
-    const bal = await getBalance(uid);
-    const numericBal = typeof bal === 'string' ? 0 : Number(bal);
-    if (numericBal < installCost) return { ok: false, error: `Saldo tidak cukup untuk biaya install (Rp ${installCost.toLocaleString('id-ID')}).` };
-  }
-
-  // Potong biaya install di awal (mengikuti perilaku bot).
-  let charged = false;
-  if (!isAdmin(uid) && installCost > 0) {
-    const ok = await deductBalance(uid, installCost);
-    if (!ok) return { ok: false, error: 'Gagal memotong saldo.' };
-    charged = true;
-  }
+  const refund = (opts.refund && opts.refund.uid) ? opts.refund : null;
 
   const jobId = newJob(uid, 'install');
   setJob(jobId, { status: 'installing', step: 'wait_ssh', message: 'Menghubungi VPS (SSH)...', progress: 20, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
@@ -335,8 +328,8 @@ async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, 
     try {
       const sshReady = await waitForPort(ip, 22, 3 * 60 * 1000, 10000);
       if (!sshReady) {
-        if (charged) { try { await addBalance(uid, installCost); } catch (_) {} }
-        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'Tidak bisa konek SSH ke VPS (port 22). Saldo dikembalikan.' });
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'Tidak bisa konek SSH ke VPS (port 22).' + (refund ? ' Saldo dikembalikan.' : '') });
         return;
       }
       setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
@@ -352,13 +345,13 @@ async function installOnExisting(userId, { ip, sshUser, sshPassword, osVersion, 
         setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: 4443, username: 'administrator', password: rdpPass, os: os.name } });
       }
     } catch (e) {
-      console.error('[web] installOnExisting error:', e);
-      if (charged) { try { await addBalance(uid, installCost); } catch (_) {} }
-      setJob(jobId, { status: 'failed', step: 'error', message: 'Gagal install: ' + (e.message || e) + ' (saldo dikembalikan).' });
+      console.error('[web] provisionInstall error:', e);
+      if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+      setJob(jobId, { status: 'failed', step: 'error', message: 'Gagal install: ' + (e.message || e) + (refund ? ' (saldo dikembalikan).' : '') });
     }
   })();
 
-  return { ok: true, jobId, installCost };
+  return { ok: true, jobId };
 }
 
 // Daftar RDP milik user (dari vps_instances, difilter RDP).
@@ -384,12 +377,28 @@ function osOptions() {
   return getStandardDedicatedOs().map((o) => ({ id: o.id, name: o.name, version: o.version }));
 }
 
+// Validasi input install (dipakai sebelum minta bayar QRIS supaya user tak bayar untuk input invalid).
+function validateInstallParams({ ip, sshPassword, osVersion, rdpPassword }) {
+  const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
+  if (!ipRegex.test(String(ip || ''))) return { ok: false, error: 'Format IP tidak valid.' };
+  if (!sshPassword) return { ok: false, error: 'Password SSH VPS wajib diisi.' };
+  const os = getStandardDedicatedOs().find((o) => o.version === osVersion || String(o.id) === String(osVersion));
+  if (!os) return { ok: false, error: 'OS Windows tidak valid.' };
+  if (rdpPassword) { const chk = validateWindowsPassword(rdpPassword); if (!chk.ok) return { ok: false, error: chk.error || 'Password RDP tidak valid.' }; }
+  return { ok: true };
+}
+
 module.exports = {
   listProducts,
   getOrderOptions,
-  orderRdp,
-  installOnExisting,
+  getOrderAmount,
+  reserveOrderSlot,
+  releaseOrderSlot,
+  provisionOrder,
+  getInstallCost,
+  provisionInstall,
   listMyRdp,
   osOptions,
+  validateInstallParams,
   getJob
 };

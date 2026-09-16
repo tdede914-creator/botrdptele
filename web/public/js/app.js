@@ -3,25 +3,44 @@ const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const fmtRp = (n) => (typeof n === 'string' ? n : 'Rp ' + Number(n || 0).toLocaleString('id-ID'));
 
+// Login OPSIONAL: api() tidak me-redirect saat 401 (tamu diperbolehkan).
 async function api(path, opts = {}) {
   const r = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...opts });
-  if (r.status === 401) { window.location.href = '/'; throw new Error('unauthorized'); }
-  return r.json();
+  let json = {};
+  try { json = await r.json(); } catch (_) {}
+  if (json && typeof json === 'object') json.__status = r.status;
+  return json;
 }
 function notice(el, type, msg) { el.innerHTML = msg ? `<div class="notice ${type}">${msg}</div>` : ''; }
 function copyBtn(text) { return `<span class="copy" onclick="navigator.clipboard.writeText('${String(text).replace(/'/g, "\\'")}')">salin</span>`; }
 const FINAL = ['ready', 'failed', 'installing_timeout'];
 
-let ME = null;
+let ME = null; // null = tamu (belum login)
 
-async function refreshBalance() {
-  const me = await api('/api/me');
-  ME = me;
-  const b = fmtRp(me.balance);
-  $('#balance').textContent = b;
-  if ($('#d-balance')) $('#d-balance').textContent = b;
-  if ($('#d-tid')) $('#d-tid').textContent = me.telegramId;
+function applyAuthUI() {
+  const logged = !!ME;
+  const pill = $('#balance-pill');
+  const authBtn = $('#auth-btn');
+  if (pill) pill.classList.toggle('hidden', !logged);
+  if (logged && $('#balance')) $('#balance').textContent = fmtRp(ME.balance);
+  if (authBtn) { authBtn.textContent = logged ? 'Keluar' : 'Masuk'; authBtn.dataset.act = logged ? 'logout' : 'login'; }
+  if ($('#d-balance')) $('#d-balance').textContent = logged ? fmtRp(ME.balance) : '—';
+  if ($('#d-tid')) $('#d-tid').textContent = logged ? ME.telegramId : 'Tamu';
+  // Elemen khusus akun disembunyikan untuk tamu.
+  const depTab = document.querySelector('.tab[data-tab="deposit"]');
+  if (depTab) depTab.classList.toggle('hidden', !logged);
+  const stats = $('#stats-grid'); if (stats) stats.classList.toggle('hidden', !logged);
+  const gn = $('#guest-note'); if (gn) gn.classList.toggle('hidden', logged);
+  const mineCard = $('#my-rdp') ? $('#my-rdp').closest('.card') : null; if (mineCard) mineCard.classList.toggle('hidden', !logged);
+  const txCard = $('#tx-list') ? $('#tx-list').closest('.card') : null; if (txCard) txCard.classList.toggle('hidden', !logged);
 }
+async function loadMe() {
+  const me = await api('/api/me');
+  ME = (me && me.ok) ? me : null;
+  applyAuthUI();
+  return ME;
+}
+async function refreshBalance() { await loadMe(); }
 
 // ---------- tabs ----------
 function activateTab(name) {
@@ -32,16 +51,20 @@ function activateTab(name) {
 }
 $$('.tab').forEach((t) => t.addEventListener('click', () => activateTab(t.dataset.tab)));
 
-$('#logout').addEventListener('click', async () => {
-  await fetch('/api/auth/logout', { method: 'POST' });
-  window.location.href = '/';
+$('#auth-btn').addEventListener('click', async (e) => {
+  if (e.currentTarget.dataset.act === 'logout') {
+    await fetch('/api/auth/logout', { method: 'POST' });
+  }
+  window.location.href = '/'; // login ada di landing (Telegram Login Widget)
 });
 
 // ---------- dashboard ----------
 async function loadMine() {
   const box = $('#my-rdp');
   try {
-    const { servers } = await api('/api/rdp/mine');
+    const res = await api('/api/rdp/mine');
+    if (!res || !res.ok) return; // tamu
+    const servers = res.servers || [];
     if ($('#d-rdpcount')) $('#d-rdpcount').textContent = servers.length;
     if (!servers.length) { box.innerHTML = '<span class="muted">Belum ada RDP. Buat lewat tab Order RDP.</span>'; return; }
     box.innerHTML = servers.map((s) => `
@@ -57,7 +80,9 @@ async function loadMine() {
 async function loadTx() {
   const box = $('#tx-list');
   try {
-    const { transactions } = await api('/api/tx');
+    const res = await api('/api/tx');
+    if (!res || !res.ok) return; // tamu
+    const transactions = res.transactions || [];
     if (!transactions.length) { box.innerHTML = '<span class="muted">Belum ada transaksi.</span>'; return; }
     box.innerHTML = transactions.map((t) => {
       const amt = Number(t.amount);
@@ -131,6 +156,59 @@ function renderActiveJobs() {
   box.innerHTML = ids.map((id) => (jobCache[id] ? jobCardHtml(jobCache[id]) : '')).join('') || '<span class="muted">Memuat…</span>';
 }
 
+// ---------- checkout (bayar via saldo atau QRIS) ----------
+const LS_CO = 'kobong_checkouts';
+let coTimer = null;
+let curModalTrx = null;
+function lsGetCO() { try { return JSON.parse(localStorage.getItem(LS_CO) || '[]'); } catch (_) { return []; } }
+function lsSetCO(a) { localStorage.setItem(LS_CO, JSON.stringify(a.slice(-6))); }
+function addCO(trx) { const a = lsGetCO(); if (!a.includes(trx)) { a.push(trx); lsSetCO(a); } ensureCOPolling(); }
+function delCO(trx) { lsSetCO(lsGetCO().filter((x) => x !== trx)); }
+function ensureCOPolling() { if (coTimer) return; coTimer = setInterval(pollCOs, 6000); pollCOs(); }
+async function pollCOs() {
+  const ids = lsGetCO();
+  if (!ids.length) { if (coTimer) { clearInterval(coTimer); coTimer = null; } return; }
+  for (const trx of ids) {
+    try {
+      const st = await api('/api/checkout/status?trx=' + encodeURIComponent(trx));
+      if (st.status === 'paid' && st.jobId) {
+        delCO(trx); trackJob(st.jobId); refreshBalance();
+        if (curModalTrx === trx) { $('#qr-status').innerHTML = '<div class="notice ok">✅ Dibayar! Proses dimulai.</div>'; setTimeout(() => { closeQrModal(); activateTab('dashboard'); }, 1200); }
+      } else if (st.status === 'expired') {
+        delCO(trx); if (curModalTrx === trx) $('#qr-status').innerHTML = '<div class="notice err">❌ QRIS kadaluarsa. Ulangi order.</div>';
+      } else if (st.status === 'provision_failed') {
+        delCO(trx); if (curModalTrx === trx) $('#qr-status').innerHTML = '<div class="notice err">❌ ' + (st.error || 'Gagal memproses setelah bayar. Hubungi admin.') + '</div>';
+      }
+    } catch (_) {}
+  }
+}
+function closeQrModal() { $('#qr-modal').classList.add('hidden'); curModalTrx = null; }
+function openQrModal(res) {
+  curModalTrx = res.transactionId;
+  addCO(res.transactionId);
+  $('#qr-amount').textContent = 'Bayar sebesar ' + fmtRp(res.amount) + ' — scan QRIS di bawah.';
+  $('#qr-holder').innerHTML = res.qrImage ? `<div class="qr"><img src="${res.qrImage}" alt="QRIS"/></div>` : `<span class="muted">QR: ${res.qrString || '-'}</span>`;
+  $('#qr-status').innerHTML = '<div class="notice info"><span class="spinner"></span> Menunggu pembayaran…</div>';
+  $('#qr-modal').classList.remove('hidden');
+}
+$('#qr-close').addEventListener('click', closeQrModal);
+// Tangani hasil order/install: bayar saldo (langsung jalan) atau QRIS (tampilkan modal).
+function handleCheckoutResult(res, msgEl) {
+  if (!res || !res.ok) { notice(msgEl, 'err', (res && res.error) || 'Gagal.'); return false; }
+  if (res.mode === 'balance') {
+    notice(msgEl, 'ok', '✅ Dibayar pakai saldo. Progres di Dashboard → “Proses Berjalan”.');
+    trackJob(res.jobId); activateTab('dashboard'); refreshBalance();
+    return true;
+  }
+  if (res.mode === 'qris') {
+    notice(msgEl, 'ok', 'QRIS dibuat. Setelah dibayar, proses jalan otomatis (lihat Dashboard).');
+    openQrModal(res);
+    return true;
+  }
+  notice(msgEl, 'err', 'Respons tidak dikenali.');
+  return false;
+}
+
 // ---------- order ----------
 let PRODUCTS = [];
 let selPkg = null;
@@ -199,11 +277,7 @@ $('#o-submit').addEventListener('click', async (e) => {
   btn.disabled = true; notice($('#order-msg'), 'info', '<span class="spinner"></span> Mengirim order…');
   try {
     const res = await api('/api/rdp/order', { method: 'POST', body: JSON.stringify({ productId, regionSlug: region, osId, durationDays, customPassword }) });
-    if (!res.ok) { notice($('#order-msg'), 'err', res.error || 'Gagal order.'); btn.disabled = false; return; }
-    notice($('#order-msg'), 'ok', '✅ Order diterima! Progres instalasi tampil di Dashboard → “Proses Berjalan” (tetap ada walau halaman di-refresh).');
-    trackJob(res.jobId);
-    activateTab('dashboard');
-    refreshBalance();
+    handleCheckoutResult(res, $('#order-msg'));
   } catch (_) { notice($('#order-msg'), 'err', 'Terjadi kesalahan.'); }
   btn.disabled = false;
 });
@@ -213,7 +287,13 @@ async function loadOsList() {
   const { osList } = await api('/api/rdp/os');
   const opts = osList.map((o) => `<option value="${o.version}">${o.name}</option>`).join('');
   $('#i-os').innerHTML = opts;
-  $('#i-info').textContent = 'Biaya install akan dipotong dari saldo saat proses dimulai. VPS wajib fresh install Ubuntu.';
+  try {
+    const c = await api('/api/rdp/install-cost');
+    const cost = c && c.ok ? c.installCost : null;
+    $('#i-info').textContent = (cost ? `Biaya jasa install: ${fmtRp(cost)}. ` : '') + 'Dibayar via saldo (jika login & cukup) atau QRIS. VPS wajib fresh install Ubuntu.';
+  } catch (_) {
+    $('#i-info').textContent = 'Biaya jasa install dibayar via saldo atau QRIS. VPS wajib fresh install Ubuntu.';
+  }
 }
 $('#i-submit').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
@@ -226,11 +306,7 @@ $('#i-submit').addEventListener('click', async (e) => {
   btn.disabled = true; notice($('#install-msg'), 'info', '<span class="spinner"></span> Memulai…');
   try {
     const res = await api('/api/rdp/install', { method: 'POST', body: JSON.stringify({ ip, sshUser, sshPassword, osVersion, rdpPassword }) });
-    if (!res.ok) { notice($('#install-msg'), 'err', res.error || 'Gagal.'); btn.disabled = false; return; }
-    notice($('#install-msg'), 'ok', '✅ Instalasi dimulai! Progres tampil di Dashboard → “Proses Berjalan” (tetap ada walau halaman di-refresh).');
-    trackJob(res.jobId);
-    activateTab('dashboard');
-    refreshBalance();
+    handleCheckoutResult(res, $('#install-msg'));
   } catch (_) { notice($('#install-msg'), 'err', 'Terjadi kesalahan.'); }
   btn.disabled = false;
 });
@@ -269,13 +345,13 @@ $('#dep-submit').addEventListener('click', async (e) => {
 // ---------- init ----------
 (async function () {
   try {
-    await refreshBalance();
-    await loadMine();
-    await loadTx();
+    const me = await loadMe();          // login opsional (tamu -> me null)
     await loadProducts();
     await loadOsList();
-    // Resume proses yang sedang berjalan (persist saat refresh).
+    if (me) { await loadMine(); await loadTx(); } // fitur akun hanya untuk yang login
+    // Resume proses & pembayaran yang sedang berjalan (persist saat refresh).
     renderActiveJobs();
     if (lsGetJobs().length) ensurePolling();
+    if (lsGetCO().length) ensureCOPolling();
   } catch (_) {}
 })();
