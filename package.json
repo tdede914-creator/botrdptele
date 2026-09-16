@@ -4,7 +4,9 @@
   "private": true,
   "scripts": {
     "start": "node src/index.js",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+    "web": "node web/server.js",
+    "web:dev": "nodemon web/server.js"
   },
   "dependencies": {
     "axios": "^1.6.2",

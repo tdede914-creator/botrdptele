@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KOBONG CLOUD SERVER — Solusi Cloud, RDP & VPS</title>
+  <meta name="description" content="KOBONG CLOUD SERVER — order RDP Windows & install RDP otomatis. Cepat, aman, siap pakai." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="topbar">
+      <div class="brand">
+        <div class="logo">☁️</div>
+        <div>KOBONG CLOUD SERVER<small>One-Stop Cloud Solutions</small></div>
+      </div>
+      <a class="btn btn-ghost" href="#login">Masuk</a>
+    </div>
+
+    <section class="hero">
+      <div>
+        <div class="badges">
+          <span class="badge">⚡ Auto-Deploy</span>
+          <span class="badge">🪟 RDP Windows Ready</span>
+          <span class="badge">🔒 Port 4443</span>
+          <span class="badge">🔄 Sinkron dengan Bot Telegram</span>
+        </div>
+        <h1>RDP Windows <span class="g">instan</span>, langsung dari browser.</h1>
+        <p class="lead">Order RDP siap pakai atau install RDP di VPS milikmu sendiri — semuanya otomatis. Saldo, stok, dan server tersinkron penuh dengan bot Telegram kami.</p>
+        <div class="row-flex">
+          <a class="btn btn-primary" href="#login">🚀 Mulai Sekarang</a>
+          <a class="btn btn-ghost" href="#features">Lihat Fitur</a>
+        </div>
+      </div>
+      <div class="login-card" id="login">
+        <h3>Masuk ke Dashboard</h3>
+        <p>Login aman memakai akun Telegram kamu. Tanpa password baru.</p>
+        <div id="tg-login-btn"><span class="muted" id="login-hint">Memuat tombol login…</span></div>
+        <div id="login-msg" class="notice err hidden"></div>
+      </div>
+    </section>
+
+    <section class="features" id="features">
+      <div class="feature"><div class="ic">🖥️</div><h4>Order RDP Otomatis</h4><p>Pilih paket, region, dan Windows — VPS dibuat & RDP diinstall otomatis, langsung siap connect.</p></div>
+      <div class="feature"><div class="ic">🔑</div><h4>Install di VPS Sendiri</h4><p>Punya VPS? Masukkan IP + kredensial atau pakai API cloud sendiri, biar kami yang install RDP-nya.</p></div>
+      <div class="feature"><div class="ic">💳</div><h4>Deposit QRIS</h4><p>Top-up saldo instan via QRIS. Saldo yang sama dipakai di web maupun bot Telegram.</p></div>
+    </section>
+  </div>
+
+  <footer><div class="container">© <span id="yr"></span> KOBONG CLOUD SERVER · One-Stop Cloud Solutions</div></footer>
+
+  <script>document.getElementById('yr').textContent=new Date().getFullYear();</script>
+  <script src="/js/login.js"></script>
+</body>
+</html>

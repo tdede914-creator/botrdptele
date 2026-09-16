@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — KOBONG CLOUD SERVER</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css" />
+</head>
+<body>
+  <div class="appbar">
+    <div class="container">
+      <div class="brand"><div class="logo">☁️</div><div>KOBONG CLOUD SERVER<small>Dashboard</small></div></div>
+      <div class="right">
+        <div class="balance-pill">💰 Saldo: <span id="balance">…</span></div>
+        <button class="btn btn-ghost btn-sm" id="logout">Keluar</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="container">
+    <div class="tabs">
+      <button class="tab active" data-tab="dashboard">🏠 Dashboard</button>
+      <button class="tab" data-tab="order">🖥️ Order RDP</button>
+      <button class="tab" data-tab="install">🔑 Install RDP</button>
+      <button class="tab" data-tab="deposit">💳 Deposit</button>
+    </div>
+
+    <!-- Dashboard -->
+    <section id="tab-dashboard" class="tabpane">
+      <div class="grid grid-3" style="margin-bottom:18px">
+        <div class="card"><div class="sub">Saldo Kamu</div><div class="stat" id="d-balance">…</div></div>
+        <div class="card"><div class="sub">RDP Aktif</div><div class="stat" id="d-rdpcount">…</div></div>
+        <div class="card"><div class="sub">Telegram ID</div><div class="stat" id="d-tid" style="font-size:22px">…</div></div>
+      </div>
+      <div class="card" style="margin-bottom:18px">
+        <h3>RDP Saya</h3><div class="sub">Daftar RDP yang kamu miliki</div>
+        <div id="my-rdp"><span class="muted">Memuat…</span></div>
+      </div>
+      <div class="card">
+        <h3>Riwayat Transaksi</h3><div class="sub">20 transaksi terakhir</div>
+        <div id="tx-list"><span class="muted">Memuat…</span></div>
+      </div>
+    </section>
+
+    <!-- Order RDP -->
+    <section id="tab-order" class="tabpane hidden">
+      <div class="card">
+        <h3>Order RDP (Auto Create + Auto Install)</h3>
+        <div class="sub">Pilih paket, durasi, region, dan Windows. VPS dibuat & RDP diinstall otomatis.</div>
+        <div id="order-step-pkg">
+          <label>1. Pilih Paket</label>
+          <div class="pkg-grid" id="pkg-grid"><span class="muted">Memuat paket…</span></div>
+        </div>
+        <div id="order-step-detail" class="hidden">
+          <div class="grid grid-2">
+            <div><label>2. Durasi</label><select id="o-duration"></select></div>
+            <div><label>3. Region</label><select id="o-region"><option>Pilih paket dulu…</option></select></div>
+          </div>
+          <div class="grid grid-2">
+            <div><label>4. Windows</label><select id="o-os"></select></div>
+            <div><label>5. Password RDP</label>
+              <select id="o-passmode"><option value="auto">Auto (acak, direkomendasikan)</option><option value="custom">Custom</option></select>
+            </div>
+          </div>
+          <div id="o-custompass-wrap" class="hidden"><label>Password Custom</label><input id="o-custompass" placeholder="min 8, huruf+angka" /></div>
+          <div class="notice info" id="o-price"></div>
+          <div class="row-flex">
+            <button class="btn btn-primary" id="o-submit">🚀 Buat & Install RDP</button>
+            <button class="btn btn-ghost" id="o-reset">Ganti Paket</button>
+          </div>
+        </div>
+        <div id="order-progress" class="hidden"></div>
+        <div id="order-msg"></div>
+      </div>
+    </section>
+
+    <!-- Install RDP -->
+    <section id="tab-install" class="tabpane hidden">
+      <div class="card">
+        <h3>Install RDP di VPS Sendiri</h3>
+        <div class="sub">Punya VPS (fresh Ubuntu)? Masukkan kredensialnya, kami install RDP Windows-nya. Biaya install dipotong dari saldo.</div>
+        <div class="grid grid-2">
+          <div><label>IP VPS</label><input id="i-ip" placeholder="mis. 103.12.34.56" /></div>
+          <div><label>SSH User</label><input id="i-user" value="root" /></div>
+        </div>
+        <label>Password SSH VPS</label><input id="i-pass" type="password" placeholder="password root VPS" />
+        <div class="grid grid-2">
+          <div><label>Windows</label><select id="i-os"></select></div>
+          <div><label>Password RDP (opsional)</label><input id="i-rdppass" placeholder="kosongkan untuk auto" /></div>
+        </div>
+        <div class="notice info" id="i-info"></div>
+        <button class="btn btn-primary" id="i-submit">🔧 Install RDP Sekarang</button>
+        <div id="install-progress" class="hidden"></div>
+        <div id="install-msg"></div>
+      </div>
+    </section>
+
+    <!-- Deposit -->
+    <section id="tab-deposit" class="tabpane hidden">
+      <div class="grid grid-2">
+        <div class="card">
+          <h3>Deposit Saldo (QRIS)</h3><div class="sub">Top-up otomatis. Saldo dipakai bersama dengan bot Telegram.</div>
+          <label>Nominal (Rp)</label><input id="dep-amount" type="number" min="1000" step="1000" placeholder="mis. 20000" />
+          <div class="row-flex" style="margin:10px 0">
+            <button class="btn btn-ghost btn-sm dep-quick" data-v="10000">10rb</button>
+            <button class="btn btn-ghost btn-sm dep-quick" data-v="20000">20rb</button>
+            <button class="btn btn-ghost btn-sm dep-quick" data-v="50000">50rb</button>
+            <button class="btn btn-ghost btn-sm dep-quick" data-v="100000">100rb</button>
+          </div>
+          <button class="btn btn-primary" id="dep-submit">Buat QRIS</button>
+          <div id="dep-msg"></div>
+        </div>
+        <div class="card" id="dep-qr-card">
+          <h3>Scan QRIS</h3><div class="sub" id="dep-qr-sub">QR akan muncul di sini setelah kamu buat tagihan.</div>
+          <div id="dep-qr-holder"></div>
+          <div id="dep-status"></div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script src="/js/app.js"></script>
+</body>
+</html>
