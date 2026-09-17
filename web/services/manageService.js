@@ -224,7 +224,12 @@ async function rebuildServer(userId, id, opts = {}) {
     const stored = String(inst.image || '').startsWith('rdp:') ? inst.image.replace('rdp:', '') : null;
     const osVersion = String(opts.osVersion || stored || 'win_2016');
     const osName = osNameFromVersion(osVersion);
-    const rdpPass = (opts.customPassword && validateWindowsPassword(opts.customPassword).ok) ? opts.customPassword : genWindowsPassword();
+    // Password custom: tolak lebih awal bila tidak valid (jangan diam-diam pakai acak).
+    if (opts.customPassword) {
+      const chk = validateWindowsPassword(opts.customPassword);
+      if (!chk.ok) return { ok: false, error: chk.error || 'Password RDP tidak valid.' };
+    }
+    const rdpPass = opts.customPassword ? opts.customPassword : genWindowsPassword();
 
     const jobId = newJob(userId, 'rebuild_rdp');
     setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Rebuild: membuat VPS baru...', progress: 8 });

@@ -6,7 +6,7 @@
   <title>Dashboard — KOBONG CLOUD SERVER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=5" />
+  <link rel="stylesheet" href="/css/styles.css?v=6" />
 </head>
 <body>
   <div class="backdrop" id="backdrop"></div>
@@ -245,6 +245,26 @@
     </div>
   </div>
 
+  <!-- Modal Rebuild -->
+  <div id="rebuild-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="rb-title">Rebuild Server</h3>
+      <div class="notice info" style="margin-top:4px">🔁 <b>GRATIS</b> — tanpa biaya tambahan. Masa aktif tetap mengikuti yang lama. Server dibuat ulang sehingga <b>IP &amp; password akan berubah</b>, dan data lama akan hilang.</div>
+      <div id="rb-rdp-opts" class="hidden">
+        <div class="grid grid-2">
+          <div><label>Ganti Windows (opsional)</label><select id="rb-os"></select></div>
+          <div><label>Mode Password</label><select id="rb-passmode"><option value="auto">Auto (acak)</option><option value="custom">Custom</option></select></div>
+        </div>
+        <div id="rb-custompass-wrap" class="hidden"><label>Password RDP Custom</label><input id="rb-custompass" placeholder="8-30 karakter, kombinasi huruf & angka" /></div>
+      </div>
+      <div id="rb-msg"></div>
+      <div class="row-flex" style="margin-top:14px;gap:8px">
+        <button class="btn btn-primary" id="rb-confirm">🔁 Ya, Rebuild Sekarang</button>
+        <button class="btn btn-ghost" id="rb-cancel">Batal</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal QRIS -->
   <div id="qr-modal" class="modal hidden">
     <div class="modal-box">
@@ -259,6 +279,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=5"></script>
+  <script src="/js/app.js?v=6"></script>
 </body>
 </html>

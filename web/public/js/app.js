@@ -216,24 +216,58 @@ async function onServerDelete(e) {
     else { if (msg) msg.textContent = '❌ ' + ((res && res.error) || 'Gagal menghapus.'); btns.forEach((b) => (b.disabled = false)); }
   } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; btns.forEach((b) => (b.disabled = false)); }
 }
+// Daftar Windows (cache) untuk opsi rebuild RDP.
+let RDP_OS_LIST = [];
+async function ensureRdpOsList() {
+  if (RDP_OS_LIST.length) return RDP_OS_LIST;
+  try { const r = await api('/api/rdp/os'); if (r && r.ok) RDP_OS_LIST = r.osList || []; } catch (_) {}
+  return RDP_OS_LIST;
+}
+let rbTarget = null; // { id, type }
+function closeRebuildModal() { $('#rebuild-modal').classList.add('hidden'); rbTarget = null; }
 async function onServerRebuild(e) {
-  const btn = e.currentTarget; const id = btn.dataset.id; const type = btn.dataset.type || 'server';
-  if (!confirm(`Rebuild ${type} ini?\n\n• GRATIS (tanpa biaya tambahan)\n• Masa aktif tetap mengikuti yang lama\n• Server dibuat ulang → IP & password BARU\n• Data lama akan hilang.\n\nLanjutkan?`)) return;
-  const card = btn.closest('.jobcard'); const msg = card ? card.querySelector('.srv-msg') : null;
-  const btns = card ? $$('.srv-power,.srv-del,.srv-rebuild', card) : [btn];
-  btns.forEach((b) => (b.disabled = true)); if (msg) msg.textContent = '⏳ Memulai rebuild…';
+  const btn = e.currentTarget;
+  rbTarget = { id: btn.dataset.id, type: btn.dataset.type || 'server' };
+  $('#rb-title').textContent = `Rebuild ${rbTarget.type}`;
+  notice($('#rb-msg'), '', '');
+  const isRdp = rbTarget.type === 'RDP';
+  $('#rb-rdp-opts').classList.toggle('hidden', !isRdp);
+  if (isRdp) {
+    const list = await ensureRdpOsList();
+    $('#rb-os').innerHTML = '<option value="">— Sama seperti sekarang —</option>' + list.map((o) => `<option value="${o.version}">${o.name}</option>`).join('');
+    $('#rb-passmode').value = 'auto';
+    $('#rb-custompass-wrap').classList.add('hidden');
+    $('#rb-custompass').value = '';
+  }
+  $('#rb-confirm').disabled = false;
+  $('#rebuild-modal').classList.remove('hidden');
+}
+if ($('#rb-cancel')) $('#rb-cancel').addEventListener('click', closeRebuildModal);
+if ($('#rb-passmode')) $('#rb-passmode').addEventListener('change', (e) => $('#rb-custompass-wrap').classList.toggle('hidden', e.target.value !== 'custom'));
+if ($('#rb-confirm')) $('#rb-confirm').addEventListener('click', async () => {
+  if (!rbTarget) return;
+  const body = { id: rbTarget.id };
+  if (rbTarget.type === 'RDP') {
+    const osVersion = $('#rb-os').value; if (osVersion) body.osVersion = osVersion;
+    if ($('#rb-passmode').value === 'custom') {
+      const cp = $('#rb-custompass').value.trim();
+      if (!cp) { notice($('#rb-msg'), 'err', 'Isi password custom atau pilih mode Auto.'); return; }
+      body.customPassword = cp;
+    }
+  }
+  $('#rb-confirm').disabled = true; notice($('#rb-msg'), 'info', '<span class="spinner"></span> Memulai rebuild…');
   try {
-    const res = await api('/api/server/rebuild', { method: 'POST', body: JSON.stringify({ id }) });
+    const res = await api('/api/server/rebuild', { method: 'POST', body: JSON.stringify(body) });
     if (res && res.ok && res.jobId) {
-      if (msg) msg.textContent = '✅ Rebuild dimulai — pantau progres di Dashboard → “Proses Berjalan”.';
       trackJob(res.jobId);
+      closeRebuildModal();
       activateTab('dashboard');
     } else {
-      if (msg) msg.textContent = '❌ ' + ((res && res.error) || 'Gagal memulai rebuild.');
-      btns.forEach((b) => (b.disabled = false));
+      notice($('#rb-msg'), 'err', (res && res.error) || 'Gagal memulai rebuild.');
+      $('#rb-confirm').disabled = false;
     }
-  } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; btns.forEach((b) => (b.disabled = false)); }
-}
+  } catch (_) { notice($('#rb-msg'), 'err', 'Terjadi kesalahan.'); $('#rb-confirm').disabled = false; }
+});
 async function loadMine() {
   const box = $('#my-rdp'); if (!box) return;
   if (!ME) { box.innerHTML = '<span class="muted">Masuk untuk melihat &amp; mengelola server kamu.</span>'; if ($('#d-rdpcount')) $('#d-rdpcount').textContent = '—'; return; }
