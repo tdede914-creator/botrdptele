@@ -7,6 +7,7 @@ function getActiveGateway() {
   const raw = String(process.env.PAYMENT_GATEWAY || 'dompetx').toLowerCase();
   if (raw === 'pakasir') return 'pakasir';
   if (raw === 'orderkuota') return 'orderkuota';
+  if (raw === 'valqenix') return 'valqenix';
   return 'dompetx';
 }
 
@@ -144,9 +145,128 @@ async function checkPakasirStatus(transactionId, amount = null) {
   }
 }
 
+// ============================================================
+// VALQENIX — QRIS payment gateway (https://app.valqenix.com)
+// Endpoint & field-name dibuat dapat diatur via .env karena spesifik doc
+// masing-masing akun. Default mengikuti pola umum gateway QRIS; sesuaikan
+// VALQENIX_* di .env sesuai dokumentasi Anda bila berbeda.
+// ============================================================
+function getValqenixConfig() {
+  return {
+    apiKey: (process.env.VALQENIX_API_KEY || '').trim(),
+    baseUrl: (process.env.VALQENIX_BASE_URL || 'https://app.valqenix.com').replace(/\/$/, ''),
+    createPath: (process.env.VALQENIX_CREATE_PATH || '/api/v1/qris/create').trim(),
+    // Gunakan {id} sebagai placeholder transactionId bila status via path param,
+    // atau biarkan tanpa {id} untuk dikirim sebagai query ?reference=&id=.
+    statusPath: (process.env.VALQENIX_STATUS_PATH || '/api/v1/qris/status').trim(),
+    authHeader: (process.env.VALQENIX_AUTH_HEADER || 'Authorization').trim(),
+    authPrefix: process.env.VALQENIX_AUTH_PREFIX !== undefined ? process.env.VALQENIX_AUTH_PREFIX : 'Bearer '
+  };
+}
+
+function valqenixHeaders(cfg) {
+  return { 'Content-Type': 'application/json', Accept: 'application/json', [cfg.authHeader]: `${cfg.authPrefix}${cfg.apiKey}` };
+}
+
+// Ambil nilai pertama yang ada dari beberapa kemungkinan nama field.
+function vpick(obj, keys) {
+  if (!obj || typeof obj !== 'object') return undefined;
+  for (const k of keys) {
+    if (k.includes('.')) {
+      const v = k.split('.').reduce((a, p) => (a && a[p] !== undefined ? a[p] : undefined), obj);
+      if (v !== undefined && v !== null && v !== '') return v;
+    } else if (obj[k] !== undefined && obj[k] !== null && obj[k] !== '') {
+      return obj[k];
+    }
+  }
+  return undefined;
+}
+
+async function createValqenixPayment(reffId, amount) {
+  const cfg = getValqenixConfig();
+  if (!cfg.apiKey) return { success: false, error: 'VALQENIX_API_KEY belum diisi di .env' };
+  // Kirim beberapa alias field agar kompatibel dengan variasi doc.
+  const payload = {
+    amount: Number(amount),
+    nominal: Number(amount),
+    reference: reffId,
+    external_id: reffId,
+    order_id: reffId,
+    merchant_ref: reffId
+  };
+  try {
+    const res = await axios.post(`${cfg.baseUrl}${cfg.createPath}`, payload, { headers: valqenixHeaders(cfg), timeout: 30000 });
+    const root = res.data || {};
+    const d = root.data || root.result || root.transaction || root.payment || root;
+    const id = vpick(d, ['id', 'trx_id', 'transaction_id', 'reference', 'reference_id', 'invoice_id', 'order_id']) || reffId;
+    const qrString = vpick(d, ['qr_string', 'qris_string', 'qris', 'qr_content', 'qr_payload', 'qrData.qrString', 'qrcode', 'qr_code', 'payment_number', 'string']);
+    const qrImage = vpick(d, ['qr_image', 'qris_image', 'qr_url', 'qris_url', 'qrData.qrImage', 'image_url', 'qr_image_url', 'image']);
+    if (!qrString && !qrImage) {
+      return { success: false, error: 'Respon Valqenix tidak berisi QR. Cek VALQENIX_CREATE_PATH / format field di .env.', raw: root };
+    }
+    return {
+      success: true,
+      data: {
+        id, reff_id: reffId,
+        nominal: Number(amount), fee: Number(vpick(d, ['fee', 'admin_fee']) || 0), tambahan: 0,
+        get_balance: Number(vpick(d, ['get_balance', 'net_amount', 'received_amount', 'amount']) || amount),
+        qr_string: qrString || null,
+        qr_image: qrImage || null,
+        payment_url: vpick(d, ['payment_url', 'checkout_url', 'url']) || null,
+        status: vpick(d, ['status']) || 'pending',
+        created_at: vpick(d, ['created_at']) || new Date().toISOString(),
+        expired_at: vpick(d, ['expired_at', 'expires_at', 'expiry_time', 'expired']) || null,
+        payment_gateway: 'valqenix',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Valqenix create payment error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+async function checkValqenixStatus(transactionId, amount = null) {
+  const cfg = getValqenixConfig();
+  if (!cfg.apiKey) return { success: false, error: 'VALQENIX_API_KEY belum diisi di .env' };
+  if (!transactionId) return { success: false, error: 'transactionId kosong' };
+  try {
+    let url;
+    if (cfg.statusPath.includes('{id}')) {
+      url = `${cfg.baseUrl}${cfg.statusPath.replace('{id}', encodeURIComponent(transactionId))}`;
+    } else {
+      const sep = cfg.statusPath.includes('?') ? '&' : '?';
+      url = `${cfg.baseUrl}${cfg.statusPath}${sep}reference=${encodeURIComponent(transactionId)}&id=${encodeURIComponent(transactionId)}&order_id=${encodeURIComponent(transactionId)}`;
+    }
+    const res = await axios.get(url, { headers: valqenixHeaders(cfg), timeout: 15000 });
+    const root = res.data || {};
+    const d = root.data || root.result || root.transaction || root.payment || root;
+    return {
+      success: true,
+      data: {
+        id: vpick(d, ['id', 'trx_id', 'transaction_id', 'reference']) || transactionId,
+        reference: transactionId,
+        status: vpick(d, ['status', 'transaction_status', 'payment_status']) || 'unknown',
+        amount: Number(vpick(d, ['amount', 'nominal']) || amount || 0),
+        get_balance: Number(vpick(d, ['get_balance', 'net_amount', 'amount']) || amount || 0),
+        paid_at: vpick(d, ['paid_at', 'completed_at', 'updated_at']) || null,
+        expired_at: vpick(d, ['expired_at', 'expires_at']) || null,
+        payment_gateway: 'valqenix',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Valqenix status error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
 module.exports = {
   getActiveGateway,
   getPakasirConfig,
   createPakasirPayment,
-  checkPakasirStatus
+  checkPakasirStatus,
+  getValqenixConfig,
+  createValqenixPayment,
+  checkValqenixStatus
 };

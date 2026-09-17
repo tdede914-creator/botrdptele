@@ -221,6 +221,9 @@ async function createPayment(apiKey, reffId, amount) {
   if (gateway === 'orderkuota') {
     return require('./orderkuotaGateway').createOrderkuotaPayment(reffId, amount);
   }
+  if (gateway === 'valqenix') {
+    return require('./paymentGateway').createValqenixPayment(reffId, amount);
+  }
   return createDompetXPayment(apiKey, reffId, amount);
 }
 
@@ -232,6 +235,9 @@ async function checkPaymentStatus(apiKeyOrTransactionId, maybeTransactionId, may
   }
   if (gateway === 'orderkuota') {
     return require('./orderkuotaGateway').checkOrderkuotaStatus(transactionId);
+  }
+  if (gateway === 'valqenix') {
+    return require('./paymentGateway').checkValqenixStatus(transactionId, maybeAmount);
   }
   return checkDompetXStatus(apiKeyOrTransactionId, maybeTransactionId);
 }

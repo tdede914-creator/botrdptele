@@ -65,3 +65,33 @@ Telegram Login Widget hanya berfungsi bila domain website sudah didaftarkan ke b
 | GET | `/api/deposit/status` | cek status & kredit saldo |
 
 > Catatan: uji runtime penuh perlu environment dengan native module `sqlite3`/`ssh2` terpasang (`npm install`).
+
+
+## Mengatasi error 521 (Web server is down)
+
+Error 521 Cloudflare = origin (proses web) **tidak merespons** — biasanya karena proses `node web/server.js` mati (SSH ditutup, crash, atau server reboot). Karena itu "restart baru normal lagi". Solusi permanen: jalankan lewat **PM2** (auto-restart + tahan reboot).
+
+```bash
+npm install -g pm2
+pm2 start ecosystem.config.js   # menjalankan kobong-bot + kobong-web
+pm2 save
+pm2 startup                     # ikuti perintah yang ditampilkan (agar auto-start saat boot)
+```
+
+`web/server.js` juga sudah diberi handler `uncaughtException`/`unhandledRejection` agar satu error tak mematikan seluruh server. Kalau masih 521:
+- Pastikan `pm2 status` menunjukkan `kobong-web` **online** (bukan errored/stopped) → cek `pm2 logs kobong-web`.
+- Pastikan Cloudflare (orange) menyambung ke port yang benar (reverse proxy 80/443 → `WEB_PORT`, atau `WEB_PORT=80`).
+
+## Payment gateway Valqenix
+
+Aktifkan di `.env`:
+```
+PAYMENT_GATEWAY=valqenix
+VALQENIX_API_KEY=...           # dari dashboard Valqenix
+VALQENIX_BASE_URL=https://app.valqenix.com
+VALQENIX_CREATE_PATH=/api/v1/qris/create
+VALQENIX_STATUS_PATH=/api/v1/qris/status
+VALQENIX_AUTH_HEADER=Authorization
+VALQENIX_AUTH_PREFIX=Bearer 
+```
+Endpoint/auth dibuat konfigurable karena spesifik tiap doc akun. Sesuaikan `VALQENIX_CREATE_PATH`/`VALQENIX_STATUS_PATH`/auth sesuai dokumentasi Anda bila berbeda dari default.

@@ -214,3 +214,20 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`🌐 KOBONG CLOUD SERVER web app berjalan di http://localhost:${PORT}`);
 });
+
+// Anti-crash: jangan biarkan 1 error tak tertangani mematikan seluruh web server
+// (penyebab umum error 521 Cloudflare = proses mati). Log saja, proses tetap hidup.
+process.on('uncaughtException', (err) => {
+  console.error('[web] uncaughtException:', err && (err.stack || err.message || err));
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[web] unhandledRejection:', reason && (reason.stack || reason.message || reason));
+});
+// Kalau port sudah dipakai / gagal listen, beri pesan jelas.
+server.on('error', (err) => {
+  if (err && err.code === 'EADDRINUSE') {
+    console.error(`[web] Port ${PORT} sudah dipakai proses lain. Hentikan proses itu atau ganti WEB_PORT.`);
+  } else {
+    console.error('[web] server error:', err && (err.stack || err.message || err));
+  }
+});
