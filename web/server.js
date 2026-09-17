@@ -98,7 +98,8 @@ function serveStatic(res, urlPath) {
       res.writeHead(404); return res.end('Not found');
     }
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
+    // Cegah cache basi (penyebab tampilan lama nyangkut). Browser wajib revalidasi.
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'Cache-Control': 'no-cache, must-revalidate' });
     res.end(buf);
   });
 }
