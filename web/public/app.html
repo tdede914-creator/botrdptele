@@ -6,7 +6,7 @@
   <title>Dashboard — KOBONG CLOUD SERVER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=4" />
+  <link rel="stylesheet" href="/css/styles.css?v=5" />
 </head>
 <body>
   <div class="backdrop" id="backdrop"></div>
@@ -55,7 +55,7 @@
 
           <div class="sec-title">🔧 Proses Instalasi Mandiri (Install Services)</div>
           <div class="svc-grid g3">
-            <div class="svc-card" data-open="install:rdp"><div class="ic">🖥️</div><h4>INSTALL RDP</h4><p>Install RDP Windows di VPS milikmu sendiri.</p><span class="go">Mulai Install</span></div>
+            <div class="svc-card" data-open="install:rdp"><div class="ic">🖥️</div><h4>INSTALL RDP</h4><p>Pakai API token cloud-mu → auto buat VPS + install RDP.</p><span class="go">Mulai Install</span></div>
             <div class="svc-card" data-open="install:cloud9"><div class="ic">💻</div><h4>INSTALL CLOUD9</h4><p>Cloud9 IDE (code editor) di VPS-mu.</p><span class="go">Mulai Install</span></div>
             <div class="svc-card" data-open="install:fastpanel"><div class="ic">🎛️</div><h4>INSTALL FASTPANEL</h4><p>Kontrol panel server di VPS-mu.</p><span class="go">Mulai Install</span></div>
           </div>
@@ -148,20 +148,23 @@
           </div>
 
           <div class="card subpane" id="install-rdp">
-            <h3>Jasa Install RDP di VPS Sendiri</h3>
-            <div class="sub">Punya VPS (fresh Ubuntu)? Kami install RDP Windows-nya. Bayar via saldo/QRIS.</div>
-            <div class="grid grid-2">
-              <div><label>IP VPS</label><input id="irdp-ip" placeholder="mis. 103.12.34.56" /></div>
-              <div><label>SSH User</label><input id="irdp-user" value="root" /></div>
+            <h3>Install RDP via API Cloud Sendiri</h3>
+            <div class="sub">Tempel <b>API token cloud</b> kamu (DigitalOcean / Linode / AWS / UpCloud). Sistem otomatis membuat VPS di akun cloud-mu lalu install Windows RDP — <b>tanpa perlu kredensial VPS manual</b>. Kamu hanya bayar biaya jasa install (saldo/QRIS).</div>
+            <label>API Token Cloud</label>
+            <input id="irdp-token" placeholder="Tempel API token (DO / Linode / AWS / UpCloud)" autocomplete="off" />
+            <div class="row-flex" style="margin:10px 0"><button class="btn btn-ghost" id="irdp-load">🔍 Cek Token &amp; Muat Region</button></div>
+            <div id="irdp-detail" class="hidden">
+              <div class="grid grid-2">
+                <div><label>Region</label><select id="irdp-region"><option value="">Memuat…</option></select></div>
+                <div><label>Spesifikasi (Size)</label><select id="irdp-size"><option value="">Pilih region dulu…</option></select></div>
+              </div>
+              <div class="grid grid-2">
+                <div><label>Windows</label><select id="irdp-os"></select></div>
+                <div><label>Password RDP (opsional)</label><input id="irdp-rdppass" placeholder="kosongkan untuk auto" /></div>
+              </div>
+              <button class="btn btn-primary" id="irdp-submit">🔧 Buat VPS &amp; Install RDP</button>
             </div>
-            <label>Password SSH VPS</label><input id="irdp-pass" type="password" placeholder="password root VPS" />
-            <div class="grid grid-2">
-              <div><label>Provider VPS (untuk port RDP)</label><select id="irdp-provider"><option value="digitalocean">DigitalOcean / Linode / AWS (4443)</option><option value="upcloud">UpCloud (8443)</option></select></div>
-              <div><label>Windows</label><select id="irdp-os"></select></div>
-            </div>
-            <label>Password RDP (opsional)</label><input id="irdp-rdppass" placeholder="kosongkan untuk auto" />
             <div class="notice info" id="irdp-info"></div>
-            <button class="btn btn-primary" id="irdp-submit">🔧 Install RDP</button>
             <div id="irdp-msg"></div>
           </div>
 
@@ -256,6 +259,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=4"></script>
+  <script src="/js/app.js?v=5"></script>
 </body>
 </html>

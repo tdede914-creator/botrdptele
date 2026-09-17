@@ -102,7 +102,7 @@ async function pollAll() {
   if (!anyActive) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } refreshBalance(); loadMine(); }
 }
 function kindLabel(kind) {
-  return ({ order: 'Order RDP', vps: 'Order VPS', cloud9: 'Order Cloud9', fastpanel: 'Order Fastpanel', install: 'Install RDP', cloud9_install: 'Install Cloud9', fastpanel_install: 'Install Fastpanel' })[kind] || 'Proses';
+  return ({ order: 'Order RDP', vps: 'Order VPS', cloud9: 'Order Cloud9', fastpanel: 'Order Fastpanel', install: 'Install RDP', cloud9_install: 'Install Cloud9', fastpanel_install: 'Install Fastpanel', rebuild_rdp: 'Rebuild RDP', rebuild_vps: 'Rebuild VPS', rebuild_cloud9: 'Rebuild Cloud9', rebuild_fastpanel: 'Rebuild Fastpanel' })[kind] || 'Proses';
 }
 function jobCardHtml(job) {
   const pct = Math.max(0, Math.min(100, Number(job.progress) || 0));
@@ -187,6 +187,7 @@ function serverCardHtml(s) {
     <div class="row-flex" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="on"${s.hasDroplet ? '' : ' disabled'}>▶️ Nyalakan</button>
       <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="off"${s.hasDroplet ? '' : ' disabled'}>⏸️ Matikan</button>
+      <button class="btn btn-ghost btn-sm srv-rebuild" data-id="${s.id}" data-type="${s.type}"${s.hasDroplet ? '' : ' disabled'}>🔁 Rebuild</button>
       <button class="btn btn-danger btn-sm srv-del" data-id="${s.id}">🗑️ Hapus</button>
     </div>
     <div class="srv-msg muted" style="font-size:12px;margin-top:8px"></div>
@@ -215,6 +216,24 @@ async function onServerDelete(e) {
     else { if (msg) msg.textContent = '❌ ' + ((res && res.error) || 'Gagal menghapus.'); btns.forEach((b) => (b.disabled = false)); }
   } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; btns.forEach((b) => (b.disabled = false)); }
 }
+async function onServerRebuild(e) {
+  const btn = e.currentTarget; const id = btn.dataset.id; const type = btn.dataset.type || 'server';
+  if (!confirm(`Rebuild ${type} ini?\n\n• GRATIS (tanpa biaya tambahan)\n• Masa aktif tetap mengikuti yang lama\n• Server dibuat ulang → IP & password BARU\n• Data lama akan hilang.\n\nLanjutkan?`)) return;
+  const card = btn.closest('.jobcard'); const msg = card ? card.querySelector('.srv-msg') : null;
+  const btns = card ? $$('.srv-power,.srv-del,.srv-rebuild', card) : [btn];
+  btns.forEach((b) => (b.disabled = true)); if (msg) msg.textContent = '⏳ Memulai rebuild…';
+  try {
+    const res = await api('/api/server/rebuild', { method: 'POST', body: JSON.stringify({ id }) });
+    if (res && res.ok && res.jobId) {
+      if (msg) msg.textContent = '✅ Rebuild dimulai — pantau progres di Dashboard → “Proses Berjalan”.';
+      trackJob(res.jobId);
+      activateTab('dashboard');
+    } else {
+      if (msg) msg.textContent = '❌ ' + ((res && res.error) || 'Gagal memulai rebuild.');
+      btns.forEach((b) => (b.disabled = false));
+    }
+  } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; btns.forEach((b) => (b.disabled = false)); }
+}
 async function loadMine() {
   const box = $('#my-rdp'); if (!box) return;
   if (!ME) { box.innerHTML = '<span class="muted">Masuk untuk melihat &amp; mengelola server kamu.</span>'; if ($('#d-rdpcount')) $('#d-rdpcount').textContent = '—'; return; }
@@ -225,6 +244,7 @@ async function loadMine() {
     if (!servers.length) { box.innerHTML = '<span class="muted">Belum ada server. Buat lewat menu Order.</span>'; return; }
     box.innerHTML = servers.map(serverCardHtml).join('');
     $$('#my-rdp .srv-power').forEach((b) => b.addEventListener('click', onServerPower));
+    $$('#my-rdp .srv-rebuild').forEach((b) => b.addEventListener('click', onServerRebuild));
     $$('#my-rdp .srv-del').forEach((b) => b.addEventListener('click', onServerDelete));
   } catch (_) {}
 }
@@ -321,14 +341,42 @@ async function loadFastpanelProducts() { try { const { products } = await api('/
 // ---------- Install forms ----------
 async function loadInstallInfo() {
   try { const { osList } = await api('/api/rdp/os'); $('#irdp-os').innerHTML = (osList || []).map((o) => `<option value="${o.version}">${o.name}</option>`).join(''); } catch (_) {}
-  try { const c = await api('/api/rdp/install-cost'); if (c && c.ok) $('#irdp-info').textContent = `Biaya jasa install RDP: ${fmtRp(c.installCost)}. Dibayar via saldo/QRIS. VPS wajib fresh Ubuntu.`; } catch (_) {}
+  try { const c = await api('/api/rdp/install-cost'); if (c && c.ok) $('#irdp-info').textContent = `Biaya jasa install RDP: ${fmtRp(c.installCost)} (dibayar via saldo/QRIS). VPS dibuat otomatis di akun cloud kamu memakai API token.`; } catch (_) {}
   $('#ic9-info').textContent = 'Biaya install Cloud9 dibayar via saldo/QRIS. VPS fresh Ubuntu/Debian.';
   $('#ifp-info').textContent = 'Biaya install Fastpanel dibayar via saldo/QRIS. VPS fresh Ubuntu/Debian.';
 }
+// Install RDP via API cloud sendiri: cek token -> muat region -> muat size -> submit.
+if ($('#irdp-load')) $('#irdp-load').addEventListener('click', async (e) => {
+  const btn = e.currentTarget; const apiToken = $('#irdp-token').value.trim();
+  if (!apiToken) { notice($('#irdp-msg'), 'err', 'Tempel API token cloud dulu.'); return; }
+  btn.disabled = true; notice($('#irdp-msg'), 'info', '<span class="spinner"></span> Memeriksa token & memuat region…');
+  try {
+    const res = await api('/api/rdp/api-regions', { method: 'POST', body: JSON.stringify({ apiToken }) });
+    if (!res || !res.ok) { notice($('#irdp-msg'), 'err', (res && res.error) || 'Token tidak valid.'); btn.disabled = false; return; }
+    $('#irdp-region').innerHTML = res.regions.map((r) => `<option value="${r.slug}">${r.slug} — ${r.name}</option>`).join('') || '<option value="">(tidak ada region)</option>';
+    $('#irdp-size').innerHTML = '<option value="">Memuat spesifikasi…</option>';
+    $('#irdp-detail').classList.remove('hidden');
+    notice($('#irdp-msg'), 'ok', `✅ Token valid (${res.provider}). Pilih region, spesifikasi, & Windows.`);
+    await loadIrdpSizes();
+  } catch (_) { notice($('#irdp-msg'), 'err', 'Gagal memeriksa token.'); }
+  btn.disabled = false;
+});
+async function loadIrdpSizes() {
+  const apiToken = $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value;
+  if (!apiToken || !regionSlug) return;
+  $('#irdp-size').innerHTML = '<option value="">Memuat…</option>';
+  try {
+    const res = await api('/api/rdp/api-sizes', { method: 'POST', body: JSON.stringify({ apiToken, regionSlug }) });
+    if (!res || !res.ok) { $('#irdp-size').innerHTML = '<option value="">(gagal memuat)</option>'; notice($('#irdp-msg'), 'err', (res && res.error) || 'Gagal memuat spesifikasi.'); return; }
+    $('#irdp-size').innerHTML = res.sizes.map((s) => `<option value="${s.slug}">${s.label}</option>`).join('') || '<option value="">(tidak ada)</option>';
+  } catch (_) { $('#irdp-size').innerHTML = '<option value="">(gagal memuat)</option>'; }
+}
+if ($('#irdp-region')) $('#irdp-region').addEventListener('change', loadIrdpSizes);
 $('#irdp-submit').addEventListener('click', (e) => {
-  const ip = $('#irdp-ip').value.trim(); const sshUser = $('#irdp-user').value.trim() || 'root'; const sshPassword = $('#irdp-pass').value; const osVersion = $('#irdp-os').value; const provider = $('#irdp-provider').value; const rdpPassword = $('#irdp-rdppass').value.trim() || undefined;
-  if (!ip || !sshPassword) { notice($('#irdp-msg'), 'err', 'IP & password SSH wajib.'); return; }
-  submitOrder('rdp_install', { ip, sshUser, sshPassword, osVersion, rdpPassword, provider }, $('#irdp-msg'), e.currentTarget);
+  const apiToken = $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value; const sizeSlug = $('#irdp-size').value; const osVersion = $('#irdp-os').value; const rdpPassword = $('#irdp-rdppass').value.trim() || undefined;
+  if (!apiToken) { notice($('#irdp-msg'), 'err', 'API token cloud wajib diisi.'); return; }
+  if (!regionSlug || !sizeSlug) { notice($('#irdp-msg'), 'err', 'Pilih region & spesifikasi dulu.'); return; }
+  submitOrder('rdp_install', { apiToken, regionSlug, sizeSlug, osVersion, rdpPassword }, $('#irdp-msg'), e.currentTarget);
 });
 $('#ic9-submit').addEventListener('click', (e) => {
   const ip = $('#ic9-ip').value.trim(); const sshUser = $('#ic9-user').value.trim() || 'root'; const sshPassword = $('#ic9-pass').value;

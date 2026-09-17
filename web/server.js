@@ -185,6 +185,17 @@ const server = http.createServer(async (req, res) => {
       if (p === '/api/rdp/install-cost' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, installCost: await rdpService.getInstallCost() });
       }
+      // Install RDP via API cloud sendiri: validasi token + daftar region/size.
+      if (p === '/api/rdp/api-regions' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await rdpService.listApiRegions(body.apiToken));
+      }
+      if (p === '/api/rdp/api-sizes' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await rdpService.listApiSizes(body.apiToken, body.regionSlug));
+      }
       if (p === '/api/rdp/options' && req.method === 'GET') {
         const ram = parsed.searchParams.get('ram');
         const core = parsed.searchParams.get('core');
@@ -244,6 +255,12 @@ const server = http.createServer(async (req, res) => {
         const body = await readBody(req);
         if (!body || !body.id) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
         return sendJson(res, 200, await manageService.deleteServer(uid, body.id));
+      }
+      // Rebuild: tanpa biaya, masa aktif tetap, tipe dipertahankan (RDP/VPS/Cloud9/Fastpanel).
+      if (p === '/api/server/rebuild' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body || !body.id) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await manageService.rebuildServer(uid, body.id, { osVersion: body.osVersion, customPassword: body.customPassword }));
       }
       if (p === '/api/rdp/mine' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, servers: await rdpService.listMyRdp(uid) });

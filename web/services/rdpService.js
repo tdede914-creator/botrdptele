@@ -390,6 +390,140 @@ function osOptions() {
   return getStandardDedicatedOs().map((o) => ({ id: o.id, name: o.name, version: o.version }));
 }
 
+// ============================================================
+// Install RDP via API cloud SENDIRI (tanpa kredensial VPS manual).
+// User menempel API token cloud-nya (DO/Linode/AWS/UpCloud); sistem membuat
+// VPS di akun cloud user lalu install RDP. Bayar hanya biaya jasa install.
+// ============================================================
+function providerOfToken(token) {
+  return isAwsToken(token) ? 'aws' : (isLinodeToken(token) ? 'linode' : (isUpCloudToken(token) ? 'upcloud' : 'digitalocean'));
+}
+function baseUbuntuForToken(token) {
+  return isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
+}
+
+// Validasi token + daftar region yang tersedia di akun cloud user.
+async function listApiRegions(apiToken) {
+  const token = String(apiToken || '').trim();
+  if (!token) return { ok: false, error: 'API token cloud wajib diisi.' };
+  try {
+    const provider = providerOfToken(token);
+    const regions = await getRegions(token);
+    if (!regions || !regions.length) return { ok: false, error: 'Token valid tapi tidak ada region tersedia.' };
+    return { ok: true, provider, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
+  } catch (e) {
+    const msg = (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || e;
+    return { ok: false, error: 'Token API tidak valid / gagal terhubung ke cloud: ' + msg };
+  }
+}
+
+// Daftar spesifikasi (size) untuk token + region.
+async function listApiSizes(apiToken, regionSlug) {
+  const token = String(apiToken || '').trim();
+  if (!token) return { ok: false, error: 'API token cloud wajib diisi.' };
+  if (!regionSlug) return { ok: false, error: 'Region wajib dipilih.' };
+  try {
+    const sizes = await getSizesForRegion(token, regionSlug);
+    const list = (sizes || []).map((s) => {
+      const memMb = Number(s.memory || 0);
+      const mem = memMb ? `${memMb >= 1024 ? Math.round(memMb / 1024) + 'GB' : memMb + 'MB'} RAM` : (s.ram ? `${s.ram}GB RAM` : '');
+      const cpu = s.vcpus ? `${s.vcpus} vCPU` : (s.cores ? `${s.cores} vCPU` : '');
+      const spec = [mem, cpu].filter(Boolean).join(' / ');
+      const label = spec ? `${s.slug} — ${spec}` : String(s.slug);
+      return { slug: s.slug, label };
+    }).filter((s) => s.slug);
+    if (!list.length) return { ok: false, error: 'Tidak ada spesifikasi tersedia untuk region ini.' };
+    return { ok: true, sizes: list.slice(0, 120) };
+  } catch (e) {
+    return { ok: false, error: 'Gagal memuat spesifikasi: ' + ((e && e.message) || e) };
+  }
+}
+
+/**
+ * Provision Install RDP memakai API cloud SENDIRI. ASUMSI: pembayaran (biaya jasa
+ * install) sudah beres; TIDAK memotong saldo. opts.refund untuk refund bila gagal
+ * SEBELUM VPS jadi (hanya pembayar login). uid = pemilik (tamu = 0).
+ */
+async function provisionInstallOwnApi(uid, { apiToken, regionSlug, sizeSlug, osVersion, rdpPassword }, opts = {}) {
+  uid = String(uid || 0);
+  const token = String(apiToken || '').trim();
+  if (!token) return { ok: false, error: 'API token cloud wajib diisi.' };
+  if (!regionSlug) return { ok: false, error: 'Region wajib dipilih.' };
+  if (!sizeSlug) return { ok: false, error: 'Spesifikasi (size) wajib dipilih.' };
+  const selectedOS = getStandardDedicatedOs().find((o) => o.version === osVersion || String(o.id) === String(osVersion));
+  if (!selectedOS) return { ok: false, error: 'OS Windows tidak valid.' };
+  let rdpPass = rdpPassword;
+  if (rdpPass) { const chk = validateWindowsPassword(rdpPass); if (!chk.ok) return { ok: false, error: chk.error || 'Password RDP tidak valid.' }; }
+  else rdpPass = genWindowsPassword();
+
+  const refund = (opts.refund && opts.refund.uid) ? opts.refund : null;
+  const rootPass = genAlphaNum(12);
+  const cloudInit = rootCloudInit(rootPass);
+  const hostname = `rdp-${uid}-${genAlphaNum(6).toLowerCase()}`;
+  const rdpPort = rdpPortForToken(token);
+  const provider = providerOfToken(token);
+
+  const jobId = newJob(uid, 'install');
+  setJob(jobId, { status: 'provisioning', step: 'create_vps', message: 'Membuat VPS di akun cloud kamu...', progress: 8 });
+
+  (async () => {
+    const createSizeSlug = isAwsToken(token) ? normalizeAwsRdpSize(sizeSlug) : sizeSlug;
+    const baseImage = baseUbuntuForToken(token);
+    let dropletId = null; let sshKey = null; let sshUser = 'root';
+    try {
+      const created = await createDroplet(token, hostname, regionSlug, createSizeSlug, baseImage, cloudInit);
+      dropletId = created.dropletId; sshKey = created.sshPrivateKey || null; if (created.sshUsername) sshUser = created.sshUsername;
+      if (!dropletId) {
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'create_vps', message: 'Gagal membuat VPS: ' + (created.error || 'unknown') + (refund ? ' (saldo dikembalikan).' : '') });
+        return;
+      }
+      setJob(jobId, { step: 'wait_ip', message: 'Menunggu IP publik...', progress: 15 });
+      const ip = await waitPublicIp(token, dropletId, 20, 10000, regionSlug);
+      if (!ip) {
+        try { await deleteDroplet(token, dropletId, regionSlug); } catch (_) {}
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'wait_ip', message: 'IP VPS belum tersedia. Coba region lain.' + (refund ? ' (saldo dikembalikan).' : '') });
+        return;
+      }
+      setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+      const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
+      if (!sshReady) { setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS di akun cloud kamu, lalu ulangi.' }); return; }
+
+      setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
+      const installCfg = { osVersion: selectedOS.version, password: rdpPass, provider, rdpPort };
+      if (sshKey) { installCfg.privateKey = sshKey; if (sshUser !== 'root') installCfg.useSudo = true; }
+      const installPromise = installDedicatedRDP(ip, sshUser, sshKey ? null : rootPass, installCfg, mkInstallLogger(jobId, `web-ownapi ${ip}`));
+
+      if (isLinodeToken(token)) {
+        const scheduleDD = (minutes) => setTimeout(async () => {
+          try { await linodeSetDirectDisk(token, dropletId); console.log(`[web-ownapi ${ip}] Linode Direct Disk diset (${minutes}m).`); }
+          catch (e) { console.warn(`[web-ownapi ${ip}] DD ${minutes}m`, e.message || e); }
+        }, minutes * 60 * 1000);
+        [5, 7, 9].forEach(scheduleDD);
+      }
+
+      await installPromise;
+      setJob(jobId, { step: 'monitor', message: 'Menunggu Windows boot & RDP siap...', progress: 70 });
+      const monitor = new RDPMonitor(ip, sshUser, rootPass, rdpPass, rdpPort);
+      const result = await monitor.waitForRDPReady(RDP_MONITOR_TIMEOUT_MS, mkMonitorLogger(jobId, `web-ownapi ${ip}`));
+      try { monitor.disconnect(); } catch (_) {}
+      const server = { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug };
+      if (result && result.success && result.rdpReady) {
+        setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server });
+      } else {
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server });
+      }
+    } catch (e) {
+      console.error('[web] provisionInstallOwnApi error:', e);
+      if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+      setJob(jobId, { status: 'failed', step: 'error', message: 'Gagal install: ' + (e.message || e) + (refund ? ' (saldo dikembalikan).' : '') });
+    }
+  })();
+
+  return { ok: true, jobId };
+}
+
 // Bungkus "prepare" seragam untuk lapisan checkout (saldo vs QRIS + refund).
 async function prepareOrder(params) {
   const amt = await getOrderAmount(params.productId, params.durationDays);
@@ -402,18 +536,19 @@ async function prepareOrder(params) {
     provision: (uid, opts) => provisionOrder(uid, params, opts)
   };
 }
+// Install RDP di web = KHUSUS pakai API token cloud sendiri (bukan kredensial VPS manual).
 async function prepareInstall(params) {
   const v = validateInstallParams(params);
   if (!v.ok) return v;
   const amount = await getInstallCost();
-  return { ok: true, amount, provision: (uid, opts) => provisionInstall(uid, params, opts) };
+  return { ok: true, amount, provision: (uid, opts) => provisionInstallOwnApi(uid, params, opts) };
 }
 
-// Validasi input install (dipakai sebelum minta bayar QRIS supaya user tak bayar untuk input invalid).
-function validateInstallParams({ ip, sshPassword, osVersion, rdpPassword }) {
-  const ipRegex = /^(\d{1,3}\.){3}\d{1,3}$/;
-  if (!ipRegex.test(String(ip || ''))) return { ok: false, error: 'Format IP tidak valid.' };
-  if (!sshPassword) return { ok: false, error: 'Password SSH VPS wajib diisi.' };
+// Validasi input install (API-cloud-sendiri) sebelum minta bayar supaya user tak bayar untuk input invalid.
+function validateInstallParams({ apiToken, regionSlug, sizeSlug, osVersion, rdpPassword }) {
+  if (!String(apiToken || '').trim()) return { ok: false, error: 'API token cloud wajib diisi.' };
+  if (!regionSlug) return { ok: false, error: 'Region wajib dipilih.' };
+  if (!sizeSlug) return { ok: false, error: 'Spesifikasi (size) wajib dipilih.' };
   const os = getStandardDedicatedOs().find((o) => o.version === osVersion || String(o.id) === String(osVersion));
   if (!os) return { ok: false, error: 'OS Windows tidak valid.' };
   if (rdpPassword) { const chk = validateWindowsPassword(rdpPassword); if (!chk.ok) return { ok: false, error: chk.error || 'Password RDP tidak valid.' }; }
@@ -429,6 +564,9 @@ module.exports = {
   provisionOrder,
   getInstallCost,
   provisionInstall,
+  provisionInstallOwnApi,
+  listApiRegions,
+  listApiSizes,
   listMyRdp,
   osOptions,
   validateInstallParams,
