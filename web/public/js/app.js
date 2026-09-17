@@ -120,7 +120,8 @@ function jobCardHtml(job) {
     if (s.os) h += `<div class="server-row"><span class="muted">OS</span><span class="mono">${s.os}</span></div>`;
     h += '</div>';
   }
-  if (job.logs && job.logs.length) h += `<div class="joblog">${job.logs.map((l) => String(l).replace(/</g, '&lt;')).join('\n')}</div>`;
+  // Sengaja TIDAK menampilkan log detail instalasi (job.logs) demi privasi & tampilan ringkas —
+  // cukup progress bar + persen. Log detail bisa memuat info sensitif (mis. link unduhan installer).
   h += '</div>';
   return h;
 }

@@ -123,7 +123,7 @@ function mkMonitorLogger(jobId, tag) {
     if (am) {
       const x = Number(am[1]), y = Number(am[2]) || 50;
       j.progress = Math.max(Number(j.progress) || 0, Math.min(99, 70 + Math.round((x / y) * 29)));
-      j.message = `Menunggu Windows boot & RDP siap (cek ${x}/${y})...`;
+      j.message = 'Menunggu Windows boot & RDP siap...';
     }
   };
 }

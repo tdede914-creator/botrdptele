@@ -231,7 +231,9 @@ const server = http.createServer(async (req, res) => {
         const jobId = p.split('/')[3];
         const job = rdpService.getJob(jobId);
         if (!job) return sendJson(res, 404, { ok: false, error: 'Job tidak ditemukan.' });
-        return sendJson(res, 200, { ok: true, job });
+        // Jangan kirim log detail instalasi ke browser (bisa memuat link unduhan/perintah internal).
+        const { logs, ...safeJob } = job;
+        return sendJson(res, 200, { ok: true, job: safeJob });
       }
 
       // ---- Endpoint yang WAJIB login ----
