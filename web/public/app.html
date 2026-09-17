@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Dashboard — KOBONG CLOUD SERVER</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/styles.css?v=6" />
+</head>
+<body>
+  <div class="backdrop" id="backdrop"></div>
+  <div class="layout">
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><div class="logo">☁️</div><div>KOBONG CLOUD<small>Cloud Server</small></div></div>
+      <nav class="nav">
+        <div class="navitem active" data-view="dashboard"><span class="ic">🏠</span> Dashboard</div>
+        <div class="nav-label">Layanan Utama</div>
+        <div class="navitem" data-view="order"><span class="ic">🛒</span> Order Layanan</div>
+        <div class="navitem" data-view="install"><span class="ic">🔧</span> Jasa Install</div>
+        <div class="navitem" data-view="deposit"><span class="ic">💳</span> Deposit Saldo</div>
+        <div class="nav-label">Akun</div>
+        <div class="navitem" data-view="status"><span class="ic">🖥️</span> Status Server</div>
+        <div class="navitem" data-view="history"><span class="ic">🧾</span> Riwayat & Lacak</div>
+        <a class="navitem" id="wa-link" href="#" target="_blank"><span class="ic">💬</span> Hubungi Admin</a>
+      </nav>
+      <div class="sidebar-foot">
+        <div class="fl">☁️</div>
+        Order Instan &amp; Cepat<br />Tanpa Perlu Daftar Akun!
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <div class="main">
+      <div class="topbar">
+        <div class="row-flex" style="gap:12px">
+          <button class="hamburger" id="hamburger">☰</button>
+          <h1 id="topbar-title">DASHBOARD UTAMA</h1>
+        </div>
+        <div class="right">
+          <div class="guest-badge" id="guest-badge">✅ MODE TAMU</div>
+          <div class="balance-pill hidden" id="balance-pill">💰 Saldo: <span id="balance">…</span></div>
+          <button class="btn btn-ghost btn-sm" id="auth-btn" data-act="login">Masuk</button>
+        </div>
+      </div>
+
+      <div class="content">
+        <!-- ===== DASHBOARD ===== -->
+        <section id="view-dashboard" class="view active">
+          <div class="hero">
+            <h2>Order &amp; Install Server Tanpa Ribet!</h2>
+            <p>Cukup pilih layanan, isi data, dan bayar langsung (saldo / QRIS).</p>
+          </div>
+
+          <div class="sec-title">🔧 Proses Instalasi Mandiri (Install Services)</div>
+          <div class="svc-grid g3">
+            <div class="svc-card" data-open="install:rdp"><div class="ic">🖥️</div><h4>INSTALL RDP</h4><p>Pakai API token cloud-mu → auto buat VPS + install RDP.</p><span class="go">Mulai Install</span></div>
+            <div class="svc-card" data-open="install:cloud9"><div class="ic">💻</div><h4>INSTALL CLOUD9</h4><p>Cloud9 IDE (code editor) di VPS-mu.</p><span class="go">Mulai Install</span></div>
+            <div class="svc-card" data-open="install:fastpanel"><div class="ic">🎛️</div><h4>INSTALL FASTPANEL</h4><p>Kontrol panel server di VPS-mu.</p><span class="go">Mulai Install</span></div>
+          </div>
+
+          <div class="sec-title">🛒 Beli &amp; Berlangganan (Order Services) <span class="tagpill">PROSES OTOMATIS</span></div>
+          <div class="svc-grid g4">
+            <div class="svc-card" data-open="order:rdp"><div class="ic">🖥️</div><h4>ORDER RDP</h4><p>VPS + RDP Windows otomatis.</p><span class="go">Pesan Langsung</span></div>
+            <div class="svc-card" data-open="order:vps"><div class="ic">🧊</div><h4>ORDER VPS</h4><p>VPS Linux siap pakai.</p><span class="go">Pesan Langsung</span></div>
+            <div class="svc-card" data-open="order:cloud9"><div class="ic">☁️</div><h4>ORDER CLOUD9</h4><p>VPS + Cloud9 IDE otomatis.</p><span class="go">Pesan Langsung</span></div>
+            <div class="svc-card" data-open="order:fastpanel"><div class="ic">🗂️</div><h4>ORDER FASTPANEL</h4><p>VPS + Fastpanel otomatis.</p><span class="go">Pesan Langsung</span></div>
+          </div>
+
+          <div class="card hidden" id="active-jobs-card" style="margin-top:24px">
+            <h3>⚙️ Proses Berjalan</h3>
+            <div class="sub">Order/instalasi yang sedang berjalan — tetap tampil walaupun halaman di-refresh.</div>
+            <div id="active-jobs"></div>
+          </div>
+        </section>
+
+        <!-- ===== ORDER ===== -->
+        <section id="view-order" class="view">
+          <div class="back-link" data-view="dashboard">« Kembali ke Dashboard</div>
+          <div class="subtabs">
+            <button class="subtab active" data-sub="order" data-name="rdp">🖥️ RDP</button>
+            <button class="subtab" data-sub="order" data-name="vps">🧊 VPS</button>
+            <button class="subtab" data-sub="order" data-name="cloud9">☁️ Cloud9</button>
+            <button class="subtab" data-sub="order" data-name="fastpanel">🗂️ Fastpanel</button>
+          </div>
+
+          <div class="card subpane" id="order-rdp">
+            <h3>Order RDP (Auto Create + Auto Install)</h3>
+            <div class="sub">Pilih paket, durasi, region, dan Windows. VPS dibuat &amp; RDP diinstall otomatis.</div>
+            <label>1. Pilih Paket</label>
+            <div class="pkg-grid" id="rdp-pkg-grid"><span class="muted">Memuat paket…</span></div>
+            <div id="rdp-detail" class="hidden">
+              <div class="grid grid-2">
+                <div><label>2. Durasi</label><select id="rdp-duration"></select></div>
+                <div><label>3. Region</label><select id="rdp-region"></select></div>
+              </div>
+              <div class="grid grid-2">
+                <div><label>4. Windows</label><select id="rdp-os"></select></div>
+                <div><label>5. Password RDP</label><select id="rdp-passmode"><option value="auto">Auto (acak)</option><option value="custom">Custom</option></select></div>
+              </div>
+              <div id="rdp-custompass-wrap" class="hidden"><label>Password Custom</label><input id="rdp-custompass" placeholder="min 8, huruf+angka" /></div>
+              <div class="notice info" id="rdp-price"></div>
+              <div class="row-flex"><button class="btn btn-primary" id="rdp-submit">🚀 Buat &amp; Install RDP</button><button class="btn btn-ghost" id="rdp-reset">Ganti Paket</button></div>
+            </div>
+            <div id="rdp-msg"></div>
+          </div>
+
+          <div class="card subpane hidden" id="order-vps">
+            <h3>Order VPS (Auto Deploy)</h3>
+            <div class="sub">VPS Linux siap pakai — root + password dikirim setelah aktif.</div>
+            <label>1. Pilih Paket</label>
+            <div class="pkg-grid" id="vps-pkg-grid"><span class="muted">Memuat paket…</span></div>
+            <div id="vps-detail" class="hidden">
+              <div class="grid grid-2">
+                <div><label>2. Durasi</label><select id="vps-duration"></select></div>
+                <div><label>3. Region</label><select id="vps-region"></select></div>
+              </div>
+              <div><label>4. OS</label><select id="vps-os"></select></div>
+              <div class="notice info" id="vps-price"></div>
+              <div class="row-flex"><button class="btn btn-primary" id="vps-submit">🚀 Buat VPS</button><button class="btn btn-ghost" id="vps-reset">Ganti Paket</button></div>
+            </div>
+            <div id="vps-msg"></div>
+          </div>
+
+          <div class="card subpane hidden" id="order-cloud9">
+            <h3>Order Cloud9 IDE (Auto Create + Install)</h3>
+            <div class="sub">VPS dibuat &amp; Cloud9 diinstall otomatis. Akses via browser.</div>
+            <div id="cloud9-products"><span class="muted">Memuat produk…</span></div>
+            <div id="cloud9-msg"></div>
+          </div>
+
+          <div class="card subpane hidden" id="order-fastpanel">
+            <h3>Order Fastpanel (Auto Create + Install)</h3>
+            <div class="sub">VPS dibuat &amp; Fastpanel diinstall otomatis. Panel di port 8888 (HTTPS).</div>
+            <div id="fastpanel-products"><span class="muted">Memuat produk…</span></div>
+            <div id="fastpanel-msg"></div>
+          </div>
+        </section>
+
+        <!-- ===== INSTALL ===== -->
+        <section id="view-install" class="view">
+          <div class="back-link" data-view="dashboard">« Kembali ke Dashboard</div>
+          <div class="subtabs">
+            <button class="subtab active" data-sub="install" data-name="rdp">🖥️ RDP</button>
+            <button class="subtab" data-sub="install" data-name="cloud9">💻 Cloud9</button>
+            <button class="subtab" data-sub="install" data-name="fastpanel">🎛️ Fastpanel</button>
+          </div>
+
+          <div class="card subpane" id="install-rdp">
+            <h3>Install RDP via API Cloud Sendiri</h3>
+            <div class="sub">Tempel <b>API token cloud</b> kamu (DigitalOcean / Linode / AWS / UpCloud). Sistem otomatis membuat VPS di akun cloud-mu lalu install Windows RDP — <b>tanpa perlu kredensial VPS manual</b>. Kamu hanya bayar biaya jasa install (saldo/QRIS).</div>
+            <label>API Token Cloud</label>
+            <input id="irdp-token" placeholder="Tempel API token (DO / Linode / AWS / UpCloud)" autocomplete="off" />
+            <div class="row-flex" style="margin:10px 0"><button class="btn btn-ghost" id="irdp-load">🔍 Cek Token &amp; Muat Region</button></div>
+            <div id="irdp-detail" class="hidden">
+              <div class="grid grid-2">
+                <div><label>Region</label><select id="irdp-region"><option value="">Memuat…</option></select></div>
+                <div><label>Spesifikasi (Size)</label><select id="irdp-size"><option value="">Pilih region dulu…</option></select></div>
+              </div>
+              <div class="grid grid-2">
+                <div><label>Windows</label><select id="irdp-os"></select></div>
+                <div><label>Password RDP (opsional)</label><input id="irdp-rdppass" placeholder="kosongkan untuk auto" /></div>
+              </div>
+              <button class="btn btn-primary" id="irdp-submit">🔧 Buat VPS &amp; Install RDP</button>
+            </div>
+            <div class="notice info" id="irdp-info"></div>
+            <div id="irdp-msg"></div>
+          </div>
+
+          <div class="card subpane hidden" id="install-cloud9">
+            <h3>Jasa Install Cloud9 di VPS Sendiri</h3>
+            <div class="sub">Cloud9 IDE diinstall di VPS milikmu (port 8000).</div>
+            <div class="grid grid-2">
+              <div><label>IP VPS</label><input id="ic9-ip" placeholder="mis. 103.12.34.56" /></div>
+              <div><label>SSH User</label><input id="ic9-user" value="root" /></div>
+            </div>
+            <label>Password SSH VPS</label><input id="ic9-pass" type="password" placeholder="password root VPS" />
+            <div class="notice info" id="ic9-info"></div>
+            <button class="btn btn-primary" id="ic9-submit">🔧 Install Cloud9</button>
+            <div id="ic9-msg"></div>
+          </div>
+
+          <div class="card subpane hidden" id="install-fastpanel">
+            <h3>Jasa Install Fastpanel di VPS Sendiri</h3>
+            <div class="sub">Fastpanel diinstall di VPS milikmu (port 8888 HTTPS).</div>
+            <div class="grid grid-2">
+              <div><label>IP VPS</label><input id="ifp-ip" placeholder="mis. 103.12.34.56" /></div>
+              <div><label>SSH User</label><input id="ifp-user" value="root" /></div>
+            </div>
+            <label>Password SSH VPS</label><input id="ifp-pass" type="password" placeholder="password root VPS" />
+            <div class="notice info" id="ifp-info"></div>
+            <button class="btn btn-primary" id="ifp-submit">🔧 Install Fastpanel</button>
+            <div id="ifp-msg"></div>
+          </div>
+        </section>
+
+        <!-- ===== STATUS SERVER ===== -->
+        <section id="view-status" class="view">
+          <div class="grid grid-3" style="margin-bottom:18px" id="stats-grid">
+            <div class="card"><div class="sub">Saldo Kamu</div><div class="stat" id="d-balance">…</div></div>
+            <div class="card"><div class="sub">Server Aktif</div><div class="stat" id="d-rdpcount">…</div></div>
+            <div class="card"><div class="sub">Akun Saya</div><div class="stat" id="d-tid" style="font-size:22px">…</div></div>
+          </div>
+          <div class="card">
+            <div class="row-flex" style="justify-content:space-between;align-items:flex-start">
+              <div><h3>VPS / RDP Saya</h3><div class="sub">Kelola server milikmu — nyalakan, matikan, atau hapus (khusus akun login)</div></div>
+              <button class="btn btn-ghost btn-sm" id="srv-refresh">🔄 Muat ulang</button>
+            </div>
+            <div id="my-rdp"><span class="muted">Masuk untuk melihat &amp; mengelola server kamu.</span></div>
+          </div>
+        </section>
+
+        <!-- ===== RIWAYAT ===== -->
+        <section id="view-history" class="view">
+          <div class="card">
+            <h3>Riwayat Transaksi</h3><div class="sub">20 transaksi terakhir (khusus akun login)</div>
+            <div id="tx-list"><span class="muted">Masuk untuk melihat riwayat.</span></div>
+          </div>
+        </section>
+
+        <!-- ===== DEPOSIT ===== -->
+        <section id="view-deposit" class="view">
+          <div class="grid grid-2">
+            <div class="card">
+              <h3>Deposit Saldo (QRIS)</h3><div class="sub">Top-up otomatis. Saldo dipakai bersama dengan bot Telegram.</div>
+              <label>Nominal (Rp)</label><input id="dep-amount" type="number" min="1000" step="1000" placeholder="mis. 20000" />
+              <div class="row-flex" style="margin:10px 0">
+                <button class="btn btn-ghost btn-sm dep-quick" data-v="10000">10rb</button>
+                <button class="btn btn-ghost btn-sm dep-quick" data-v="20000">20rb</button>
+                <button class="btn btn-ghost btn-sm dep-quick" data-v="50000">50rb</button>
+                <button class="btn btn-ghost btn-sm dep-quick" data-v="100000">100rb</button>
+              </div>
+              <button class="btn btn-primary" id="dep-submit">Buat QRIS</button>
+              <div id="dep-msg"></div>
+            </div>
+            <div class="card" id="dep-qr-card">
+              <h3>Scan QRIS</h3><div class="sub" id="dep-qr-sub">QR akan muncul di sini setelah kamu buat tagihan.</div>
+              <div id="dep-qr-holder"></div>
+              <div id="dep-status"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal Rebuild -->
+  <div id="rebuild-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3 id="rb-title">Rebuild Server</h3>
+      <div class="notice info" style="margin-top:4px">🔁 <b>GRATIS</b> — tanpa biaya tambahan. Masa aktif tetap mengikuti yang lama. Server dibuat ulang sehingga <b>IP &amp; password akan berubah</b>, dan data lama akan hilang.</div>
+      <div id="rb-rdp-opts" class="hidden">
+        <div class="grid grid-2">
+          <div><label>Ganti Windows (opsional)</label><select id="rb-os"></select></div>
+          <div><label>Mode Password</label><select id="rb-passmode"><option value="auto">Auto (acak)</option><option value="custom">Custom</option></select></div>
+        </div>
+        <div id="rb-custompass-wrap" class="hidden"><label>Password RDP Custom</label><input id="rb-custompass" placeholder="8-30 karakter, kombinasi huruf & angka" /></div>
+      </div>
+      <div id="rb-msg"></div>
+      <div class="row-flex" style="margin-top:14px;gap:8px">
+        <button class="btn btn-primary" id="rb-confirm">🔁 Ya, Rebuild Sekarang</button>
+        <button class="btn btn-ghost" id="rb-cancel">Batal</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal QRIS -->
+  <div id="qr-modal" class="modal hidden">
+    <div class="modal-box">
+      <h3>Bayar via QRIS</h3>
+      <div class="sub" id="qr-amount"></div>
+      <div id="qr-holder" style="text-align:center"></div>
+      <div id="qr-status" style="margin-top:10px"></div>
+      <div class="row-flex" style="margin-top:12px">
+        <button class="btn btn-ghost btn-sm" id="qr-close">Tutup</button>
+        <span class="muted" style="font-size:12px">Setelah bayar, proses jalan otomatis walau modal ditutup.</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/app.js?v=6"></script>
+</body>
+</html>
