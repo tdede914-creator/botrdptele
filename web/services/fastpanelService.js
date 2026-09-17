@@ -94,6 +94,7 @@ async function provisionOrder(uid, { productId, days }, opts = {}) {
       try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
       await vpsManager.createVpsInstance({ userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip, region, image: `fastpanel:${image}`, rootPassword: rootPass, expiresAt: nowSec + days * 86400, durationDays: days });
       setJob(jobId, { status: 'ready', step: 'done', message: 'Fastpanel siap digunakan!', progress: 100, server: { ip, port: result.port || 8888, url: result.url || `https://${ip}:8888/`, username: result.username, password: result.password } });
+      try { const n = require('./notify'); n.fastpanelSuccess({ apiId: prod.api_id, userId: uid, ip, url: result.url || `https://${ip}:8888/`, port: result.port || 8888, size: prod.size_slug, region, durationDays: days, username: result.username }); } catch (_) {}
     } catch (e) {
       console.error('[web] fastpanel order error:', e);
       try { if (dropletId) await deleteDroplet(token, dropletId, region); } catch (_) {}

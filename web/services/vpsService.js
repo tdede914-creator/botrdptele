@@ -99,6 +99,7 @@ async function provisionVps(uid, { productId, regionSlug, imageSlug, durationDay
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu VPS siap (SSH)...', progress: 80 });
       await waitForPort(ip, 22, 8 * 60 * 1000, 12000);
       setJob(jobId, { status: 'ready', step: 'done', message: 'VPS siap digunakan!', progress: 100, server: { ip, port: 22, username: 'root', password: rootPass, os: image, region: regionSlug } });
+      try { const n = require('./notify'); n.orderSuccess({ event: 'VPS', ip, spec: `RAM ${prod.ram}GB / ${prod.core} CORE`, durationDays: d, apiId: prod.api_id, region: regionSlug, buyerId: uid }); n.testimonial({ productName: `VPS ${prod.ram}GB/${prod.core}CORE` }); } catch (_) {}
     } catch (e) {
       console.error('[web] provisionVps error:', e);
       setJob(jobId, { status: 'failed', step: 'error', message: 'Terjadi kesalahan: ' + (e.message || e) });

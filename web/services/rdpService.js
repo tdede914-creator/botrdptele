@@ -296,6 +296,7 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
 
       if (result && result.success && result.rdpReady) {
         setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        try { const n = require('./notify'); n.orderSuccess({ event: 'RDP', ip, spec: `RAM ${prod.ram}GB / ${prod.core} CORE`, durationDays: d, apiId: prod.api_id, region: regionSlug, windows: selectedOS.name, buyerId: uid }); n.testimonial({ productName: `RDP ${selectedOS.name}` }); } catch (_) {}
       } else {
         setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       }

@@ -87,6 +87,7 @@ async function provisionOrder(uid, { productId, days }, opts = {}) {
       try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
       await vpsManager.createVpsInstance({ userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip, region, image: 'cloud9:ubuntu-22.04', rootPassword: rootPass, expiresAt: nowSec + days * 86400, durationDays: days });
       setJob(jobId, { status: 'ready', step: 'done', message: 'Cloud9 siap digunakan!', progress: 100, server: { ip, port: result.port || c9Port, url: `http://${ip}:${result.port || c9Port}`, username: result.username, password: result.password } });
+      try { const n = require('./notify'); n.cloud9Success({ apiId: prod.api_id, userId: uid, ip, url: `http://${ip}:${result.port || c9Port}`, port: result.port || c9Port, size: prod.size_slug, region, durationDays: days }); } catch (_) {}
     } catch (e) {
       console.error('[web] cloud9 order error:', e);
       try { if (dropletId) await deleteDroplet(token, dropletId, region); } catch (_) {}
