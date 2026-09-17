@@ -66,6 +66,14 @@ function readBody(req) {
     req.on('error', () => resolve(null));
   });
 }
+function readRawBody(req) {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => { data += c; if (data.length > 1e6) req.destroy(); });
+    req.on('end', () => resolve(data));
+    req.on('error', () => resolve(''));
+  });
+}
 function sessionUser(req) {
   const token = parseCookies(req)[COOKIE];
   const s = auth.verifySessionToken(token, SESSION_SECRET);
@@ -101,6 +109,30 @@ const server = http.createServer(async (req, res) => {
   const p = parsed.pathname;
 
   try {
+    // ---- Webhook Valqenix (verifikasi HMAC, butuh RAW body) ----
+    if (p === '/webhooks/valqenix' && req.method === 'POST') {
+      const raw = await readRawBody(req);
+      const pg = require('../src/utils/paymentGateway');
+      const sig = req.headers['x-valqenix-signature'];
+      const ts = req.headers['x-valqenix-timestamp'];
+      const evt = String(req.headers['x-valqenix-event'] || '');
+      const secret = process.env.VALQENIX_WEBHOOK_SECRET || '';
+      if (!pg.verifyValqenixWebhook(raw, sig, ts, secret)) { res.writeHead(401); return res.end('invalid signature'); }
+      let body = {}; try { body = JSON.parse(raw); } catch (_) {}
+      const d = body.data || body;
+      const reference = d.reference || d.id;
+      const status = String(d.status || '').toLowerCase();
+      const paid = evt.includes('paid') || evt.includes('settled') || status === 'paid' || status === 'settled';
+      if (reference && paid) {
+        try {
+          const co = await checkoutService.markPaidByReference(reference);
+          if (!co.found) await depositService.creditByReference(reference);
+        } catch (e) { console.error('[web] valqenix webhook handle error:', e); }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end('{"ok":true}');
+    }
+
     // ---- API ----
     if (p.startsWith('/api/')) {
       // Public

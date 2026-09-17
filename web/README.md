@@ -95,3 +95,14 @@ VALQENIX_AUTH_HEADER=Authorization
 VALQENIX_AUTH_PREFIX=Bearer 
 ```
 Endpoint/auth dibuat konfigurable karena spesifik tiap doc akun. Sesuaikan `VALQENIX_CREATE_PATH`/`VALQENIX_STATUS_PATH`/auth sesuai dokumentasi Anda bila berbeda dari default.
+
+
+### Webhook Valqenix (opsional tapi disarankan)
+
+Pembayaran sudah dikonfirmasi via **polling** (jalan tanpa webhook). Webhook membuatnya **instan + tahan restart**. Cara aktifkan:
+
+1. Set di `.env`: `VALQENIX_WEBHOOK_SECRET=whsec_...` (dari dashboard Valqenix).
+2. Di dashboard Valqenix → Webhook → **Destination address**: `https://DOMAIN-ANDA/webhooks/valqenix` (wajib HTTPS port 443, bukan IP/localhost).
+3. Aktifkan webhook & simpan.
+
+Server memverifikasi header `X-Valqenix-Signature` (`v1=HMAC_SHA256(timestamp.rawBody)`) dengan secret tersebut; event `payment.paid`/`payment.settled` otomatis memicu provisioning (checkout) atau kredit saldo (deposit).

@@ -1,4 +1,5 @@
 const axios = require('axios');
+const crypto = require('crypto');
 const db = require('../config/database');
 
 const PAKASIR_BASE_URL = (process.env.PAKASIR_BASE_URL || 'https://app.pakasir.com').replace(/\/$/, '');
@@ -271,6 +272,19 @@ async function cancelValqenixPayment(transactionId) {
   }
 }
 
+// Verifikasi tanda tangan webhook Valqenix.
+// Header: X-Valqenix-Signature: v1=HMAC_SHA256(`${timestamp}.${rawBody}`), X-Valqenix-Timestamp.
+function verifyValqenixWebhook(rawBody, signatureHeader, timestamp, secret) {
+  secret = secret || process.env.VALQENIX_WEBHOOK_SECRET || '';
+  if (!secret || !signatureHeader || !timestamp) return false;
+  const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
+  const provided = String(signatureHeader).replace(/^v1=/, '').trim();
+  try {
+    const a = Buffer.from(provided); const b = Buffer.from(expected);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  } catch (_) { return false; }
+}
+
 module.exports = {
   getActiveGateway,
   getPakasirConfig,
@@ -279,5 +293,6 @@ module.exports = {
   getValqenixConfig,
   createValqenixPayment,
   checkValqenixStatus,
-  cancelValqenixPayment
+  cancelValqenixPayment,
+  verifyValqenixWebhook
 };

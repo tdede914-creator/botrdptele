@@ -155,4 +155,14 @@ function startPoller(transactionId) {
   setTimeout(tick, 10000).unref?.();
 }
 
-module.exports = { start, status };
+// Dipanggil webhook saat pembayaran 'paid'/'settled': provision langsung.
+// Return { found, jobId }. found=false berarti bukan checkout (mungkin deposit).
+async function markPaidByReference(reference) {
+  const co = checkouts.get(reference);
+  if (!co) return { found: false };
+  if (co.jobId) return { found: true, jobId: co.jobId };
+  const jobId = await finalize(co);
+  return { found: true, jobId };
+}
+
+module.exports = { start, status, markPaidByReference };

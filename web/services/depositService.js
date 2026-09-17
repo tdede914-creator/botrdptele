@@ -87,4 +87,19 @@ function startPoller(userId, transactionId, amount, expiryTime) {
   setTimeout(tick, interval).unref?.();
 }
 
-module.exports = { createDeposit, checkAndCredit };
+// Dipanggil webhook: kredit saldo berdasarkan reference (idempoten via pending payment).
+async function creditByReference(reference) {
+  let pending = null;
+  try { pending = await PaymentTracker.findPendingPaymentByTransactionOrCode(reference); } catch (_) {}
+  if (!pending) return { found: false };
+  const amount = Number(pending.amount || 0);
+  const uid = pending.user_id;
+  if (uid && amount > 0) {
+    await BalanceManager.updateBalance(uid, amount);
+    try { await PaymentTracker.removePendingPayment(reference); } catch (_) {}
+    return { found: true, credited: amount };
+  }
+  return { found: true, credited: 0 };
+}
+
+module.exports = { createDeposit, checkAndCredit, creditByReference };
