@@ -465,7 +465,7 @@ async function startRentPurchase(bot, chatId, messageId, plan, tier = 'basic', u
   try {
     const uniqueCode = `RENT${Date.now()}${chatId}`;
     const payment = await createPayment(process.env.DOMPETX_API_KEY, uniqueCode, amountToPay);
-    if (!payment.success || !payment.data || !payment.data.qr_string) throw new Error(payment.error || 'QRIS tidak tersedia');
+    if (!payment.success || !payment.data || (!payment.data.qr_string && !payment.data.qr_image && !payment.data.payment_url)) throw new Error(payment.error || 'QRIS tidak tersedia');
     const expiryTime = payment.data.expired_at ? new Date(payment.data.expired_at).getTime() : Date.now() + (30 * 60 * 1000);
     await renterManager.addPendingRentPayment({
       userId: chatId,
@@ -487,15 +487,17 @@ async function startRentPurchase(bot, chatId, messageId, plan, tier = 'basic', u
       `👛 Saldo dipakai: *${formatRp(balanceUsed)}*\n` +
       `📌 Kekurangan via QRIS: *${formatRp(amountToPay)}*\n\n` +
       `Scan QRIS di atas. Setelah pembayaran berhasil, sewa bot otomatis aktif.`;
-    const qrBuffer = await generateQrBuffer(payment.data.qr_string);
+    const qrBuffer = payment.data.qr_string ? await generateQrBuffer(payment.data.qr_string) : null;
     try { await bot.deleteMessage(chatId, messageId); } catch (_) {}
     let sent;
-    const reply_markup = { inline_keyboard: [
-      [{ text: '🔄 Refresh Status', callback_data: `rent_pay_refresh:${payment.data.id}` }],
-      [{ text: '❌ Batalkan', callback_data: `rent_pay_cancel:${payment.data.id}` }]
-    ] };
+    const payUrl = payment.data.payment_url || payment.data.qr_image || null;
+    const rows = [];
+    if (payUrl) rows.push([{ text: '💳 Bayar Sekarang (QRIS)', url: payUrl }]);
+    rows.push([{ text: '🔄 Refresh Status', callback_data: `rent_pay_refresh:${payment.data.id}` }]);
+    rows.push([{ text: '❌ Batalkan', callback_data: `rent_pay_cancel:${payment.data.id}` }]);
+    const reply_markup = { inline_keyboard: rows };
     if (qrBuffer) sent = await bot.sendPhoto(chatId, qrBuffer, { caption: text, parse_mode: 'Markdown', reply_markup });
-    else sent = await bot.sendMessage(chatId, text + (payment.data.qr_image ? `\n\n[Klik untuk melihat QR Code](${payment.data.qr_image})` : ''), { parse_mode: 'Markdown', reply_markup });
+    else sent = await bot.sendMessage(chatId, text + (payUrl ? '\n\n👉 Tekan *Bayar Sekarang (QRIS)* untuk membuka halaman pembayaran.' : ''), { parse_mode: 'Markdown', reply_markup });
     startRentPaymentPolling(bot, chatId, sent.message_id, payment.data.id);
   } catch (e) {
     if (balanceUsed > 0) { try { await addBalance(chatId, balanceUsed); } catch (_) {} }

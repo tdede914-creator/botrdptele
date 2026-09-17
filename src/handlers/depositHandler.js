@@ -138,7 +138,7 @@ async function handleDepositAmount(bot, msg, session) {
       throw new Error(payment.error || 'Gagal membuat pembayaran QRIS');
     }
 
-    if (!payment.data || !payment.data.qr_string) {
+    if (!payment.data || (!payment.data.qr_string && !payment.data.qr_image && !payment.data.payment_url)) {
       throw new Error('Data pembayaran dari payment gateway tidak lengkap');
     }
 
@@ -155,7 +155,8 @@ async function handleDepositAmount(bot, msg, session) {
     );
 
     const messageText = createDompetXPaymentMessage(payment.data, amount);
-    const qrImageBuffer = await generateQrCodeFromString(payment.data.qr_string);
+    // Sebagian gateway (mis. Valqenix) mengembalikan payment_link, bukan qr_string.
+    const qrImageBuffer = payment.data.qr_string ? await generateQrCodeFromString(payment.data.qr_string) : null;
 
     try {
       await bot.deleteMessage(chatId, session.messageId);
@@ -176,18 +177,15 @@ async function handleDepositAmount(bot, msg, session) {
         }
       });
     } else {
-      const qrImageUrl = payment.data.qr_image || '#';
+      // Tidak ada QR image (mis. Valqenix pakai payment_link): beri tombol URL "Bayar Sekarang".
+      const payUrl = payment.data.payment_url || payment.data.qr_image || null;
+      const kb = [];
+      if (payUrl) kb.push([{ text: '💳 Bayar Sekarang (QRIS)', url: payUrl }]);
+      kb.push([{ text: 'Refresh Status', callback_data: 'refresh_payment' }]);
+      kb.push([{ text: 'Batalkan', callback_data: 'cancel_payment' }]);
       sentMessage = await bot.sendMessage(chatId,
-        messageText + `\n\n[Klik untuk melihat QR Code](${qrImageUrl})`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: 'Refresh Status', callback_data: 'refresh_payment' }],
-              [{ text: 'Batalkan', callback_data: 'cancel_payment' }]
-            ]
-          }
-        }
+        messageText + (payUrl ? '\n\n👉 Tekan *Bayar Sekarang (QRIS)* untuk membuka halaman pembayaran.' : ''),
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } }
       );
     }
 

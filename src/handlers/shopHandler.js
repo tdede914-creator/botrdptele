@@ -333,29 +333,27 @@ Error: ${safeMd(payment.error || 'unknown')}`,
     `Silakan scan QRIS untuk bayar.`;
 
   let qrBuffer = null;
-  try {
-    qrBuffer = await QRCode.toBuffer(payment.data.qr_string, {
-      type: 'png',
-      width: 400,
-      margin: 2
-    });
-  } catch {}
+  if (payment.data.qr_string) {
+    try {
+      qrBuffer = await QRCode.toBuffer(payment.data.qr_string, { type: 'png', width: 400, margin: 2 });
+    } catch {}
+  }
 
   // delete previous menu message to avoid editing photo/text mismatch
   try { await bot.deleteMessage(chatId, shopSession.messageId); } catch {}
 
-  const replyMarkup = {
-    inline_keyboard: [
-      [{ text: '🔄 Refresh Status', callback_data: `shop_refresh_${orderId}` }],
-      [{ text: '❌ Batalkan', callback_data: `shop_cancel_${orderId}` }]
-    ]
-  };
+  const payUrl = payment.data.payment_url || payment.data.qr_image || null;
+  const shopRows = [];
+  if (payUrl) shopRows.push([{ text: '💳 Bayar Sekarang (QRIS)', url: payUrl }]);
+  shopRows.push([{ text: '🔄 Refresh Status', callback_data: `shop_refresh_${orderId}` }]);
+  shopRows.push([{ text: '❌ Batalkan', callback_data: `shop_cancel_${orderId}` }]);
+  const replyMarkup = { inline_keyboard: shopRows };
 
   let sent;
   if (qrBuffer) {
     sent = await bot.sendPhoto(chatId, qrBuffer, { caption, parse_mode: 'Markdown', reply_markup: replyMarkup });
   } else {
-    sent = await bot.sendMessage(chatId, caption + `\n\n[Klik untuk melihat QR](${payment.data.qr_image || '#'})`, {
+    sent = await bot.sendMessage(chatId, caption + (payUrl ? '\n\n👉 Tekan *Bayar Sekarang (QRIS)* untuk membuka halaman pembayaran.' : ''), {
       parse_mode: 'Markdown',
       reply_markup: replyMarkup
     });
