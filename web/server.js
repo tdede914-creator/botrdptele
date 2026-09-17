@@ -137,7 +137,7 @@ const server = http.createServer(async (req, res) => {
     if (p.startsWith('/api/')) {
       // Public
       if (p === '/api/config' && req.method === 'GET') {
-        return sendJson(res, 200, { botUsername: BOT_USERNAME, publicUrl: process.env.WEB_PUBLIC_URL || '' });
+        return sendJson(res, 200, { botUsername: BOT_USERNAME, publicUrl: process.env.WEB_PUBLIC_URL || '', adminContact: process.env.ADMIN_WA || process.env.ADMIN_CONTACT || process.env.ADMIN_USERNAME || '' });
       }
       if (p === '/api/auth/telegram' && req.method === 'POST') {
         const body = await readBody(req);

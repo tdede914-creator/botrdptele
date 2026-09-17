@@ -3,55 +3,58 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KOBONG CLOUD SERVER — Solusi Cloud, RDP & VPS</title>
-  <meta name="description" content="KOBONG CLOUD SERVER — order RDP Windows & install RDP otomatis. Cepat, aman, siap pakai." />
+  <title>KOBONG CLOUD SERVER — Cloud VPS · RDP · Cloud Panel</title>
+  <meta name="description" content="KOBONG CLOUD SERVER — One Stop Cloud Solution. Order & install RDP, VPS, Cloud9, Fastpanel. Cepat, otomatis, tanpa perlu daftar." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
-  <div class="container">
-    <div class="topbar">
-      <div class="brand">
-        <div class="logo">☁️</div>
-        <div>KOBONG CLOUD SERVER<small>One-Stop Cloud Solutions</small></div>
-      </div>
-      <a class="btn btn-ghost" href="#login">Masuk</a>
+  <nav class="lp-nav">
+    <div class="brand"><div class="logo">☁️</div><div>KOBONG CLOUD<small>Cloud Server</small></div></div>
+    <div class="links">
+      <a href="#services">Layanan</a>
+      <a href="#login">Masuk</a>
+      <a class="btn btn-primary btn-sm" href="/app">Mulai (Tamu)</a>
+    </div>
+  </nav>
+
+  <header class="lp-hero">
+    <h1><span class="g">KOBONG CLOUD SERVER</span></h1>
+    <div class="tagline">One Stop Cloud Solution &nbsp;·&nbsp; Cloud VPS &nbsp;·&nbsp; RDP &nbsp;·&nbsp; Cloud Panel</div>
+    <div class="row-flex" style="justify-content:center;margin-top:22px">
+      <a class="btn btn-primary" href="/app">🚀 Mulai Sekarang (Tanpa Login)</a>
+      <a class="btn btn-ghost" href="#login">Masuk dengan Telegram</a>
+    </div>
+  </header>
+
+  <main class="lp-wrap" id="services">
+    <div class="sec-title">🔧 Install Services</div>
+    <div class="svc-grid g3">
+      <a class="svc-card" href="/app"><div class="ic">🖥️</div><h4>INSTALL RDP</h4><p>Install RDP Windows di VPS milikmu.</p><span class="go">Mulai Install</span></a>
+      <a class="svc-card" href="/app"><div class="ic">💻</div><h4>INSTALL CLOUD9</h4><p>Cloud9 IDE (code editor) di VPS-mu.</p><span class="go">Mulai Install</span></a>
+      <a class="svc-card" href="/app"><div class="ic">🎛️</div><h4>INSTALL FASTPANEL</h4><p>Kontrol panel server di VPS-mu.</p><span class="go">Mulai Install</span></a>
     </div>
 
-    <section class="hero">
-      <div>
-        <div class="badges">
-          <span class="badge">⚡ Auto-Deploy</span>
-          <span class="badge">🪟 RDP Windows Ready</span>
-          <span class="badge">🔒 Port 4443</span>
-          <span class="badge">🔄 Sinkron dengan Bot Telegram</span>
-        </div>
-        <h1>RDP Windows <span class="g">instan</span>, langsung dari browser.</h1>
-        <p class="lead">Order RDP siap pakai atau install RDP di VPS milikmu sendiri — semuanya otomatis. Saldo, stok, dan server tersinkron penuh dengan bot Telegram kami.</p>
-        <div class="row-flex">
-          <a class="btn btn-primary" href="/app">🚀 Mulai Sekarang (Tanpa Login)</a>
-          <a class="btn btn-ghost" href="#login">Masuk dengan Telegram</a>
-        </div>
-      </div>
-      <div class="login-card" id="login">
-        <h3>Masuk ke Dashboard</h3>
-        <p>Login <b>opsional</b> — bisa bayar pakai saldo & lihat RDP kamu. Tanpa login pun tetap bisa order (bayar QRIS). <a href="/app">Lanjut sebagai tamu →</a></p>
-        <div id="tg-login-btn"><span class="muted" id="login-hint">Memuat tombol login…</span></div>
-        <div id="login-msg" class="notice err hidden"></div>
-      </div>
-    </section>
+    <div class="sec-title" style="margin-top:26px">🛒 Order Services</div>
+    <div class="svc-grid g4">
+      <a class="svc-card" href="/app"><div class="ic">🖥️</div><h4>ORDER RDP</h4><p>VPS + RDP Windows otomatis.</p><span class="go">Pesan Langsung</span></a>
+      <a class="svc-card" href="/app"><div class="ic">🧊</div><h4>ORDER VPS</h4><p>VPS Linux siap pakai.</p><span class="go">Pesan Langsung</span></a>
+      <a class="svc-card" href="/app"><div class="ic">☁️</div><h4>ORDER CLOUD9</h4><p>VPS + Cloud9 IDE otomatis.</p><span class="go">Pesan Langsung</span></a>
+      <a class="svc-card" href="/app"><div class="ic">🗂️</div><h4>ORDER FASTPANEL</h4><p>VPS + Fastpanel otomatis.</p><span class="go">Pesan Langsung</span></a>
+    </div>
 
-    <section class="features" id="features">
-      <div class="feature"><div class="ic">🖥️</div><h4>Order RDP Otomatis</h4><p>Pilih paket, region, dan Windows — VPS dibuat & RDP diinstall otomatis, langsung siap connect.</p></div>
-      <div class="feature"><div class="ic">🔑</div><h4>Install di VPS Sendiri</h4><p>Punya VPS? Masukkan IP + kredensial atau pakai API cloud sendiri, biar kami yang install RDP-nya.</p></div>
-      <div class="feature"><div class="ic">💳</div><h4>Deposit QRIS</h4><p>Top-up saldo instan via QRIS. Saldo yang sama dipakai di web maupun bot Telegram.</p></div>
-    </section>
-  </div>
+    <div class="login-card" id="login">
+      <h3>Masuk ke Dashboard</h3>
+      <p>Login <b>opsional</b> — bisa bayar pakai saldo &amp; lihat layanan kamu. Tanpa login pun tetap bisa order (bayar QRIS). <a href="/app">Lanjut sebagai tamu →</a></p>
+      <div id="tg-login-btn"><span class="muted" id="login-hint">Memuat tombol login…</span></div>
+      <div id="login-msg" class="notice err hidden"></div>
+    </div>
+  </main>
 
-  <footer><div class="container">© <span id="yr"></span> KOBONG CLOUD SERVER · One-Stop Cloud Solutions</div></footer>
+  <footer class="lp-foot">@kobongcloudserver — One Stop Cloud Solution · © <span id="yr"></span> KOBONG CLOUD SERVER</footer>
 
-  <script>document.getElementById('yr').textContent=new Date().getFullYear();</script>
+  <script>document.getElementById('yr').textContent = new Date().getFullYear();</script>
   <script src="/js/login.js"></script>
 </body>
 </html>

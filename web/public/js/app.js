@@ -18,38 +18,63 @@ function copyBtn(t) { return `<span class="copy" onclick="navigator.clipboard.wr
 let ME = null;
 function applyAuthUI() {
   const logged = !!ME;
-  const pill = $('#balance-pill'); const authBtn = $('#auth-btn');
-  if (pill) pill.classList.toggle('hidden', !logged);
+  const badge = $('#guest-badge'); if (badge) badge.classList.toggle('hidden', logged);
+  const pill = $('#balance-pill'); if (pill) pill.classList.toggle('hidden', !logged);
   if (logged && $('#balance')) $('#balance').textContent = fmtRp(ME.balance);
-  if (authBtn) { authBtn.textContent = logged ? 'Keluar' : 'Masuk'; authBtn.dataset.act = logged ? 'logout' : 'login'; }
+  const authBtn = $('#auth-btn'); if (authBtn) { authBtn.textContent = logged ? 'Keluar' : 'Masuk'; authBtn.dataset.act = logged ? 'logout' : 'login'; }
   if ($('#d-balance')) $('#d-balance').textContent = logged ? fmtRp(ME.balance) : '—';
   if ($('#d-tid')) $('#d-tid').textContent = logged ? ME.telegramId : 'Tamu';
-  const depTab = document.querySelector('.tab[data-tab="deposit"]'); if (depTab) depTab.classList.toggle('hidden', !logged);
-  const stats = $('#stats-grid'); if (stats) stats.classList.toggle('hidden', !logged);
-  const gn = $('#guest-note'); if (gn) gn.classList.toggle('hidden', logged);
-  const mineCard = $('#my-rdp') ? $('#my-rdp').closest('.card') : null; if (mineCard) mineCard.classList.toggle('hidden', !logged);
-  const txCard = $('#tx-list') ? $('#tx-list').closest('.card') : null; if (txCard) txCard.classList.toggle('hidden', !logged);
+  const depNav = document.querySelector('.navitem[data-view="deposit"]'); if (depNav) depNav.classList.toggle('hidden', !logged);
 }
 async function loadMe() { const me = await api('/api/me'); ME = (me && me.ok) ? me : null; applyAuthUI(); return ME; }
 async function refreshBalance() { await loadMe(); }
 
-// ---------- tabs ----------
-function activateTab(name) {
-  $$('.tab').forEach((x) => x.classList.toggle('active', x.dataset.tab === name));
-  $$('.tabpane').forEach((p) => p.classList.add('hidden'));
-  const pane = $('#tab-' + name); if (pane) pane.classList.remove('hidden');
+// ---------- navigation (sidebar + views) ----------
+const VIEW_TITLES = { dashboard: 'DASHBOARD UTAMA', order: 'ORDER LAYANAN', install: 'JASA INSTALL', deposit: 'DEPOSIT SALDO', status: 'STATUS SERVER', history: 'RIWAYAT & LACAK' };
+function closeSidebar() { const s = $('#sidebar'); if (s) s.classList.remove('open'); const b = $('#backdrop'); if (b) b.classList.remove('show'); }
+function openSidebar() { const s = $('#sidebar'); if (s) s.classList.add('open'); const b = $('#backdrop'); if (b) b.classList.add('show'); }
+function showView(name) {
+  $$('.view').forEach((v) => v.classList.remove('active'));
+  const v = $('#view-' + name); if (v) v.classList.add('active');
+  $$('.navitem[data-view]').forEach((n) => n.classList.toggle('active', n.dataset.view === name));
+  const t = $('#topbar-title'); if (t && VIEW_TITLES[name]) t.textContent = VIEW_TITLES[name];
+  closeSidebar();
+  window.scrollTo(0, 0);
 }
-$$('.tab').forEach((t) => t.addEventListener('click', () => activateTab(t.dataset.tab)));
-$$('.subtab').forEach((t) => t.addEventListener('click', () => {
-  const group = t.dataset.sub, name = t.dataset.name;
-  $$(`.subtab[data-sub="${group}"]`).forEach((x) => x.classList.toggle('active', x === t));
+const activateTab = showView; // kompatibilitas kode lama
+function selectSub(group, name) {
+  $$(`.subtab[data-sub="${group}"]`).forEach((x) => x.classList.toggle('active', x.dataset.name === name));
   ['rdp', 'vps', 'cloud9', 'fastpanel'].forEach((n) => { const el = $('#' + group + '-' + n); if (el) el.classList.add('hidden'); });
   const show = $('#' + group + '-' + name); if (show) show.classList.remove('hidden');
-}));
+}
+function openService(group, name) { showView(group); selectSub(group, name); }
+
+$$('.navitem[data-view]').forEach((n) => n.addEventListener('click', () => showView(n.dataset.view)));
+$$('.back-link[data-view]').forEach((b) => b.addEventListener('click', () => showView(b.dataset.view)));
+$$('.svc-card[data-open]').forEach((c) => c.addEventListener('click', () => { const parts = String(c.dataset.open).split(':'); openService(parts[0], parts[1]); }));
+$$('.subtab').forEach((t) => t.addEventListener('click', () => selectSub(t.dataset.sub, t.dataset.name)));
+if ($('#hamburger')) $('#hamburger').addEventListener('click', openSidebar);
+if ($('#backdrop')) $('#backdrop').addEventListener('click', closeSidebar);
+
 $('#auth-btn').addEventListener('click', async (e) => {
   if (e.currentTarget.dataset.act === 'logout') await fetch('/api/auth/logout', { method: 'POST' });
   window.location.href = '/';
 });
+
+// Link "Hubungi Admin" dari /api/config
+(async function () {
+  try {
+    const cfg = await api('/api/config');
+    const c = cfg && cfg.adminContact ? String(cfg.adminContact) : '';
+    const el = $('#wa-link'); if (!el || !c) return;
+    let href = '#';
+    if (/^https?:\/\//i.test(c)) href = c;
+    else if (c.startsWith('@')) href = 'https://t.me/' + c.slice(1);
+    else if (/^\d[\d\s+-]*$/.test(c)) href = 'https://wa.me/' + c.replace(/[^\d]/g, '');
+    else href = 'https://t.me/' + c;
+    el.href = href;
+  } catch (_) {}
+})();
 
 // ---------- job registry (persist across refresh) ----------
 const LS_JOBS = 'kobong_jobs';
