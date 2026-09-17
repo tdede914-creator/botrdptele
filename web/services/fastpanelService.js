@@ -91,6 +91,7 @@ async function provisionOrder(uid, { productId, days }, opts = {}) {
       setJob(jobId, { step: 'installing', message: 'Menginstall Fastpanel...', progress: 60, server: { ip, port: 8888 } });
       const result = await installFastpanel(ip, 'root', rootPass, { fastpanelUser: 'fastuser', fastpanelPassword: fpPass, sshMaxWaitMs: 12 * 60 * 1000 }, mkLog(jobId, `web-fp ${ip}`));
       const nowSec = Math.floor(Date.now() / 1000);
+      try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
       await vpsManager.createVpsInstance({ userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip, region, image: `fastpanel:${image}`, rootPassword: rootPass, expiresAt: nowSec + days * 86400, durationDays: days });
       setJob(jobId, { status: 'ready', step: 'done', message: 'Fastpanel siap digunakan!', progress: 100, server: { ip, port: result.port || 8888, url: result.url || `https://${ip}:8888/`, username: result.username, password: result.password } });
     } catch (e) {

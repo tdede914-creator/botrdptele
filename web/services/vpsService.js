@@ -94,6 +94,7 @@ async function provisionVps(uid, { productId, regionSlug, imageSlug, durationDay
         try { await upcloudApi.upcloudProvisionRootPassword(ip, created.sshPrivateKey, rootPass, { maxWaitMs: 6 * 60 * 1000 }); } catch (e) { console.warn('[web vps] upcloud root pass:', e.message || e); }
       }
       const nowSec = Math.floor(Date.now() / 1000);
+      try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
       await vpsManager.createVpsInstance({ userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip, region: regionSlug, image, rootPassword: rootPass, expiresAt: nowSec + d * 86400, durationDays: d });
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu VPS siap (SSH)...', progress: 80 });
       await waitForPort(ip, 22, 8 * 60 * 1000, 12000);

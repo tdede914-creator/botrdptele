@@ -258,6 +258,7 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
 
       const nowSec = Math.floor(Date.now() / 1000);
       const expiresAt = nowSec + (d * 86400);
+      try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
       await vpsManager.createVpsInstance({
         userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip,
         region: regionSlug, image: `rdp:${selectedOS.version}`, rootPassword: rdpPass,
