@@ -128,7 +128,10 @@ function closeQrModal() { $('#qr-modal').classList.add('hidden'); curModalTrx = 
 function openQrModal(res) {
   curModalTrx = res.transactionId; addCO(res.transactionId);
   $('#qr-amount').textContent = 'Bayar sebesar ' + fmtRp(res.amount) + ' — scan QRIS di bawah.';
-  $('#qr-holder').innerHTML = res.qrImage ? `<div class="qr"><img src="${res.qrImage}" alt="QRIS"/></div>` : `<span class="muted">QR: ${res.qrString || '-'}</span>`;
+  let holder = res.qrImage ? `<div class="qr"><img src="${res.qrImage}" alt="QRIS"/></div>` : '';
+  if (res.paymentUrl) holder += `<div style="margin-top:10px"><a class="btn btn-primary" href="${res.paymentUrl}" target="_blank" rel="noopener">💳 Buka Halaman Pembayaran</a></div>`;
+  if (!holder) holder = `<span class="muted">QR: ${res.qrString || '-'}</span>`;
+  $('#qr-holder').innerHTML = holder;
   $('#qr-status').innerHTML = '<div class="notice info"><span class="spinner"></span> Menunggu pembayaran…</div>';
   $('#qr-modal').classList.remove('hidden');
 }
@@ -280,7 +283,10 @@ $('#dep-submit').addEventListener('click', async (e) => {
     if (!res.ok) { notice($('#dep-msg'), 'err', res.error || 'Gagal membuat QRIS.'); btn.disabled = false; return; }
     notice($('#dep-msg'), 'ok', 'QRIS dibuat. Scan & bayar ' + fmtRp(res.amount) + '.');
     $('#dep-qr-sub').textContent = 'Scan dengan e-wallet / m-banking (QRIS).';
-    $('#dep-qr-holder').innerHTML = res.qrImage ? `<div class="qr"><img src="${res.qrImage}" alt="QRIS"/></div>` : '<span class="muted">QR: ' + (res.qrString || '-') + '</span>';
+    let depHolder = res.qrImage ? `<div class="qr"><img src="${res.qrImage}" alt="QRIS"/></div>` : '';
+    if (res.paymentUrl) depHolder += `<div style="margin-top:10px"><a class="btn btn-primary" href="${res.paymentUrl}" target="_blank" rel="noopener">💳 Buka Halaman Pembayaran</a></div>`;
+    if (!depHolder) depHolder = '<span class="muted">QR: ' + (res.qrString || '-') + '</span>';
+    $('#dep-qr-holder').innerHTML = depHolder;
     $('#dep-status').innerHTML = '<div class="notice info"><span class="spinner"></span> Menunggu pembayaran…</div>';
     if (depTimer) clearInterval(depTimer);
     depTimer = setInterval(async () => {

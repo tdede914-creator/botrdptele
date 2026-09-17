@@ -40,13 +40,18 @@ async function canUseBalance(uid, amount) {
 async function makeQris(uid, prefix, amount) {
   const uniqueCode = `${prefix}${Date.now()}${uid || 'g'}`;
   const payment = await createPayment(process.env.DOMPETX_API_KEY, uniqueCode, amount);
-  if (!payment || !payment.success || !payment.data || !payment.data.qr_string) {
-    return { ok: false, error: (payment && payment.error) || 'Gagal membuat QRIS.' };
+  if (!payment || !payment.success || !payment.data) {
+    return { ok: false, error: (payment && payment.error) || 'Gagal membuat pembayaran.' };
   }
-  let qrImage = null;
-  try { qrImage = await QRCode.toDataURL(payment.data.qr_string, { width: 320, margin: 1 }); } catch (_) {}
-  const expiresAt = payment.data.expired_at ? new Date(payment.data.expired_at).getTime() : (Date.now() + 30 * 60 * 1000);
-  return { ok: true, transactionId: payment.data.id, qrString: payment.data.qr_string, qrImage: qrImage || payment.data.qr_image || null, expiresAt };
+  const d = payment.data;
+  // Sebagian gateway (mis. Valqenix) mengembalikan payment_link, bukan qr_string.
+  if (!d.qr_string && !d.qr_image && !d.payment_url) {
+    return { ok: false, error: 'Gateway tidak mengembalikan QR/link pembayaran.' };
+  }
+  let qrImage = d.qr_image || null;
+  if (!qrImage && d.qr_string) { try { qrImage = await QRCode.toDataURL(d.qr_string, { width: 320, margin: 1 }); } catch (_) {} }
+  const expiresAt = d.expired_at ? new Date(d.expired_at).getTime() : (Date.now() + 30 * 60 * 1000);
+  return { ok: true, transactionId: d.id, qrString: d.qr_string || null, qrImage, paymentUrl: d.payment_url || null, expiresAt };
 }
 
 /**
@@ -99,7 +104,7 @@ async function start(uid, kind, params) {
     reserved: !!(isOrder && prep.reserve), expiresAt: q.expiresAt
   });
   startPoller(q.transactionId);
-  return { ok: true, mode: 'qris', transactionId: q.transactionId, amount, qrImage: q.qrImage, qrString: q.qrString, expiresAt: q.expiresAt };
+  return { ok: true, mode: 'qris', transactionId: q.transactionId, amount, qrImage: q.qrImage, qrString: q.qrString, paymentUrl: q.paymentUrl, expiresAt: q.expiresAt };
 }
 
 async function finalize(co) {

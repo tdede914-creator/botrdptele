@@ -154,13 +154,13 @@ async function checkPakasirStatus(transactionId, amount = null) {
 function getValqenixConfig() {
   return {
     apiKey: (process.env.VALQENIX_API_KEY || '').trim(),
-    baseUrl: (process.env.VALQENIX_BASE_URL || 'https://app.valqenix.com').replace(/\/$/, ''),
-    createPath: (process.env.VALQENIX_CREATE_PATH || '/api/v1/qris/create').trim(),
-    // Gunakan {id} sebagai placeholder transactionId bila status via path param,
-    // atau biarkan tanpa {id} untuk dikirim sebagai query ?reference=&id=.
-    statusPath: (process.env.VALQENIX_STATUS_PATH || '/api/v1/qris/status').trim(),
-    authHeader: (process.env.VALQENIX_AUTH_HEADER || 'Authorization').trim(),
-    authPrefix: process.env.VALQENIX_AUTH_PREFIX !== undefined ? process.env.VALQENIX_AUTH_PREFIX : 'Bearer '
+    // Sesuai doc: base https://app.valqenix.com/api/v1, auth header X-API-Key (tanpa prefix).
+    baseUrl: (process.env.VALQENIX_BASE_URL || 'https://app.valqenix.com/api/v1').replace(/\/$/, ''),
+    createPath: (process.env.VALQENIX_CREATE_PATH || '/payments').trim(),
+    statusPath: (process.env.VALQENIX_STATUS_PATH || '/payments/{id}').trim(),
+    cancelPath: (process.env.VALQENIX_CANCEL_PATH || '/payments/{id}/cancel').trim(),
+    authHeader: (process.env.VALQENIX_AUTH_HEADER || 'X-API-Key').trim(),
+    authPrefix: process.env.VALQENIX_AUTH_PREFIX !== undefined ? process.env.VALQENIX_AUTH_PREFIX : ''
   };
 }
 
@@ -182,40 +182,42 @@ function vpick(obj, keys) {
   return undefined;
 }
 
+// Create Payment: POST /api/v1/payments { amount, note } -> data { reference,
+// requested_amount, admin_fee, total_pay, payment_link, status }.
+// Catatan: Valqenix mengembalikan payment_link (halaman QRIS hosted), bukan qr_string.
+// Kita simpan payment_url = payment_link; qr_string/qr_image dipakai bila ada.
 async function createValqenixPayment(reffId, amount) {
   const cfg = getValqenixConfig();
   if (!cfg.apiKey) return { success: false, error: 'VALQENIX_API_KEY belum diisi di .env' };
-  // Kirim beberapa alias field agar kompatibel dengan variasi doc.
-  const payload = {
-    amount: Number(amount),
-    nominal: Number(amount),
-    reference: reffId,
-    external_id: reffId,
-    order_id: reffId,
-    merchant_ref: reffId
-  };
+  const payload = { amount: Number(amount), note: `Order ${reffId}` };
   try {
     const res = await axios.post(`${cfg.baseUrl}${cfg.createPath}`, payload, { headers: valqenixHeaders(cfg), timeout: 30000 });
     const root = res.data || {};
-    const d = root.data || root.result || root.transaction || root.payment || root;
-    const id = vpick(d, ['id', 'trx_id', 'transaction_id', 'reference', 'reference_id', 'invoice_id', 'order_id']) || reffId;
-    const qrString = vpick(d, ['qr_string', 'qris_string', 'qris', 'qr_content', 'qr_payload', 'qrData.qrString', 'qrcode', 'qr_code', 'payment_number', 'string']);
-    const qrImage = vpick(d, ['qr_image', 'qris_image', 'qr_url', 'qris_url', 'qrData.qrImage', 'image_url', 'qr_image_url', 'image']);
-    if (!qrString && !qrImage) {
-      return { success: false, error: 'Respon Valqenix tidak berisi QR. Cek VALQENIX_CREATE_PATH / format field di .env.', raw: root };
+    const d = root.data || root;
+    const reference = vpick(d, ['reference', 'id', 'reference_id', 'invoice_id']) || reffId;
+    const paymentLink = vpick(d, ['payment_link', 'payment_url', 'checkout_url', 'url']);
+    const qrString = vpick(d, ['qr_string', 'qris_string', 'qris', 'qr_content', 'qr_payload', 'qrData.qrString']);
+    const qrImage = vpick(d, ['qr_image', 'qris_image', 'qr_url', 'qrData.qrImage', 'qr_image_url']);
+    if (!paymentLink && !qrString && !qrImage) {
+      return { success: false, error: 'Respon Valqenix tidak berisi payment_link/QR. Cek VALQENIX_CREATE_PATH/API key.', raw: root };
     }
     return {
       success: true,
       data: {
-        id, reff_id: reffId,
-        nominal: Number(amount), fee: Number(vpick(d, ['fee', 'admin_fee']) || 0), tambahan: 0,
-        get_balance: Number(vpick(d, ['get_balance', 'net_amount', 'received_amount', 'amount']) || amount),
+        id: reference,
+        reff_id: reffId,
+        nominal: Number(amount),
+        fee: Number(vpick(d, ['admin_fee', 'fee']) || 0),
+        total_pay: Number(vpick(d, ['total_pay', 'total_amount']) || amount),
+        tambahan: 0,
+        // Deposit: user menerima saldo sebesar `amount` yang diminta (fee ditanggung pembayar).
+        get_balance: Number(amount),
         qr_string: qrString || null,
         qr_image: qrImage || null,
-        payment_url: vpick(d, ['payment_url', 'checkout_url', 'url']) || null,
+        payment_url: paymentLink || null,
         status: vpick(d, ['status']) || 'pending',
         created_at: vpick(d, ['created_at']) || new Date().toISOString(),
-        expired_at: vpick(d, ['expired_at', 'expires_at', 'expiry_time', 'expired']) || null,
+        expired_at: vpick(d, ['expired_at', 'expires_at', 'expiry_time']) || null,
         payment_gateway: 'valqenix',
         raw: root
       }
@@ -226,30 +228,25 @@ async function createValqenixPayment(reffId, amount) {
   }
 }
 
+// Check Status: GET /api/v1/payments/:reference -> data.status (pending|paid|expired|cancelled)
 async function checkValqenixStatus(transactionId, amount = null) {
   const cfg = getValqenixConfig();
   if (!cfg.apiKey) return { success: false, error: 'VALQENIX_API_KEY belum diisi di .env' };
   if (!transactionId) return { success: false, error: 'transactionId kosong' };
   try {
-    let url;
-    if (cfg.statusPath.includes('{id}')) {
-      url = `${cfg.baseUrl}${cfg.statusPath.replace('{id}', encodeURIComponent(transactionId))}`;
-    } else {
-      const sep = cfg.statusPath.includes('?') ? '&' : '?';
-      url = `${cfg.baseUrl}${cfg.statusPath}${sep}reference=${encodeURIComponent(transactionId)}&id=${encodeURIComponent(transactionId)}&order_id=${encodeURIComponent(transactionId)}`;
-    }
-    const res = await axios.get(url, { headers: valqenixHeaders(cfg), timeout: 15000 });
+    const path = cfg.statusPath.includes('{id}') ? cfg.statusPath.replace('{id}', encodeURIComponent(transactionId)) : `${cfg.statusPath}/${encodeURIComponent(transactionId)}`;
+    const res = await axios.get(`${cfg.baseUrl}${path}`, { headers: valqenixHeaders(cfg), timeout: 15000 });
     const root = res.data || {};
-    const d = root.data || root.result || root.transaction || root.payment || root;
+    const d = root.data || root;
     return {
       success: true,
       data: {
-        id: vpick(d, ['id', 'trx_id', 'transaction_id', 'reference']) || transactionId,
+        id: vpick(d, ['reference', 'id']) || transactionId,
         reference: transactionId,
         status: vpick(d, ['status', 'transaction_status', 'payment_status']) || 'unknown',
-        amount: Number(vpick(d, ['amount', 'nominal']) || amount || 0),
-        get_balance: Number(vpick(d, ['get_balance', 'net_amount', 'amount']) || amount || 0),
-        paid_at: vpick(d, ['paid_at', 'completed_at', 'updated_at']) || null,
+        amount: Number(vpick(d, ['requested_amount', 'amount', 'total_pay']) || amount || 0),
+        get_balance: Number(amount || vpick(d, ['requested_amount', 'amount']) || 0),
+        paid_at: vpick(d, ['paid_at', 'settled_at', 'updated_at']) || null,
         expired_at: vpick(d, ['expired_at', 'expires_at']) || null,
         payment_gateway: 'valqenix',
         raw: root
@@ -261,6 +258,19 @@ async function checkValqenixStatus(transactionId, amount = null) {
   }
 }
 
+// Cancel: POST /api/v1/payments/:reference/cancel (hanya jika masih pending)
+async function cancelValqenixPayment(transactionId) {
+  const cfg = getValqenixConfig();
+  if (!cfg.apiKey || !transactionId) return { success: false, skipped: true };
+  try {
+    const path = cfg.cancelPath.includes('{id}') ? cfg.cancelPath.replace('{id}', encodeURIComponent(transactionId)) : `/payments/${encodeURIComponent(transactionId)}/cancel`;
+    const res = await axios.post(`${cfg.baseUrl}${path}`, {}, { headers: valqenixHeaders(cfg), timeout: 15000 });
+    return { success: !!(res.data && (res.data.success !== false)), raw: res.data };
+  } catch (error) {
+    return { success: false, error: extractError(error) };
+  }
+}
+
 module.exports = {
   getActiveGateway,
   getPakasirConfig,
@@ -268,5 +278,6 @@ module.exports = {
   checkPakasirStatus,
   getValqenixConfig,
   createValqenixPayment,
-  checkValqenixStatus
+  checkValqenixStatus,
+  cancelValqenixPayment
 };

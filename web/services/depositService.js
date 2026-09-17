@@ -20,24 +20,26 @@ async function createDeposit(userId, amount) {
   await getUser(uid);
   const uniqueCode = `DEP${Date.now()}${uid}`;
   const payment = await createPayment(process.env.DOMPETX_API_KEY, uniqueCode, amount);
-  if (!payment || !payment.success) return { ok: false, error: (payment && payment.error) || 'Gagal membuat pembayaran QRIS.' };
-  if (!payment.data || !payment.data.qr_string) return { ok: false, error: 'Data pembayaran gateway tidak lengkap.' };
+  if (!payment || !payment.success || !payment.data) return { ok: false, error: (payment && payment.error) || 'Gagal membuat pembayaran QRIS.' };
+  const d = payment.data;
+  if (!d.qr_string && !d.qr_image && !d.payment_url) return { ok: false, error: 'Data pembayaran gateway tidak lengkap.' };
 
-  const expiryTime = payment.data.expired_at ? new Date(payment.data.expired_at).getTime() : (Date.now() + 30 * 60 * 1000);
-  await PaymentTracker.addPendingPayment(uid, payment.data.id, payment.data.reff_id, amount, expiryTime);
+  const expiryTime = d.expired_at ? new Date(d.expired_at).getTime() : (Date.now() + 30 * 60 * 1000);
+  await PaymentTracker.addPendingPayment(uid, d.id, d.reff_id, amount, expiryTime);
 
-  let qrDataUrl = null;
-  try { qrDataUrl = await QRCode.toDataURL(payment.data.qr_string, { width: 320, margin: 1 }); } catch (_) {}
+  let qrDataUrl = d.qr_image || null;
+  if (!qrDataUrl && d.qr_string) { try { qrDataUrl = await QRCode.toDataURL(d.qr_string, { width: 320, margin: 1 }); } catch (_) {} }
 
   // Poller latar belakang: cek status berkala & kredit otomatis saat sukses.
-  startPoller(uid, payment.data.id, amount, expiryTime);
+  startPoller(uid, d.id, amount, expiryTime);
 
   return {
     ok: true,
-    transactionId: payment.data.id,
+    transactionId: d.id,
     amount,
-    qrString: payment.data.qr_string,
-    qrImage: qrDataUrl || payment.data.qr_image || null,
+    qrString: d.qr_string || null,
+    qrImage: qrDataUrl,
+    paymentUrl: d.payment_url || null,
     expiresAt: expiryTime
   };
 }

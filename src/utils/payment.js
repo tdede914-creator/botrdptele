@@ -255,6 +255,9 @@ async function cancelPayment(transactionId) {
   if (gateway === 'orderkuota') {
     return require('./orderkuotaGateway').cancelOrderkuotaPayment(transactionId);
   }
+  if (gateway === 'valqenix') {
+    return require('./paymentGateway').cancelValqenixPayment(transactionId);
+  }
   // Pakasir & DompetX adapter belum expose cancel endpoint.
   return { success: true, skipped: true, reason: `cancel not implemented for gateway=${gateway}` };
 }
