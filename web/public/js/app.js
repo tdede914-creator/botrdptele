@@ -23,7 +23,7 @@ function applyAuthUI() {
   if (logged && $('#balance')) $('#balance').textContent = fmtRp(ME.balance);
   const authBtn = $('#auth-btn'); if (authBtn) { authBtn.textContent = logged ? 'Keluar' : 'Masuk'; authBtn.dataset.act = logged ? 'logout' : 'login'; }
   if ($('#d-balance')) $('#d-balance').textContent = logged ? fmtRp(ME.balance) : '—';
-  if ($('#d-tid')) $('#d-tid').textContent = logged ? ME.telegramId : 'Tamu';
+  if ($('#d-tid')) $('#d-tid').textContent = logged ? (ME.username || ME.telegramId) : 'Tamu';
   const depNav = document.querySelector('.navitem[data-view="deposit"]'); if (depNav) depNav.classList.toggle('hidden', !logged);
 }
 async function loadMe() { const me = await api('/api/me'); ME = (me && me.ok) ? me : null; applyAuthUI(); return ME; }
@@ -38,6 +38,8 @@ function showView(name) {
   const v = $('#view-' + name); if (v) v.classList.add('active');
   $$('.navitem[data-view]').forEach((n) => n.classList.toggle('active', n.dataset.view === name));
   const t = $('#topbar-title'); if (t && VIEW_TITLES[name]) t.textContent = VIEW_TITLES[name];
+  if (name === 'status') { try { loadMine(); } catch (_) {} }
+  if (name === 'history') { try { loadTx(); } catch (_) {} }
   closeSidebar();
   window.scrollTo(0, 0);
 }
@@ -174,16 +176,59 @@ async function submitOrder(kind, params, msgEl, btn) {
   btn.disabled = false;
 }
 
-// ---------- dashboard ----------
+// ---------- VPS/RDP Saya (kelola server sendiri) ----------
+const typeIcon = (t) => ({ RDP: '🖥️', Cloud9: '💻', Fastpanel: '🎛️', VPS: '🧊' }[t] || '🖥️');
+function serverCardHtml(s) {
+  return `<div class="jobcard" data-sid="${s.id}">
+    <div class="row-flex" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
+      <div><b>${typeIcon(s.type)} ${s.server}</b> <span class="tag ok">${s.type}</span> ${s.ip ? copyBtn(s.ip) : ''}</div>
+      <div class="muted" style="font-size:12px">${s.os || '-'} · ${s.region} · ${s.size}</div>
+    </div>
+    <div class="row-flex" style="margin-top:10px;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="on"${s.hasDroplet ? '' : ' disabled'}>▶️ Nyalakan</button>
+      <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="off"${s.hasDroplet ? '' : ' disabled'}>⏸️ Matikan</button>
+      <button class="btn btn-danger btn-sm srv-del" data-id="${s.id}">🗑️ Hapus</button>
+    </div>
+    <div class="srv-msg muted" style="font-size:12px;margin-top:8px"></div>
+  </div>`;
+}
+async function onServerPower(e) {
+  const btn = e.currentTarget; const id = btn.dataset.id; const action = btn.dataset.action;
+  const card = btn.closest('.jobcard'); const msg = card ? card.querySelector('.srv-msg') : null;
+  const btns = card ? $$('.srv-power,.srv-del', card) : [btn];
+  btns.forEach((b) => (b.disabled = true)); if (msg) msg.textContent = '⏳ Memproses…';
+  try {
+    const res = await api('/api/server/power', { method: 'POST', body: JSON.stringify({ id, action }) });
+    if (msg) msg.textContent = res && res.ok ? (action === 'on' ? '✅ Perintah nyalakan terkirim.' : '✅ Perintah matikan terkirim.') : '❌ ' + ((res && res.error) || 'Gagal.');
+  } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; }
+  btns.forEach((b) => (b.disabled = false));
+}
+async function onServerDelete(e) {
+  const btn = e.currentTarget; const id = btn.dataset.id;
+  if (!confirm('Hapus server ini secara permanen? Data tidak bisa dikembalikan.')) return;
+  const card = btn.closest('.jobcard'); const msg = card ? card.querySelector('.srv-msg') : null;
+  const btns = card ? $$('.srv-power,.srv-del', card) : [btn];
+  btns.forEach((b) => (b.disabled = true)); if (msg) msg.textContent = '⏳ Menghapus…';
+  try {
+    const res = await api('/api/server/delete', { method: 'POST', body: JSON.stringify({ id }) });
+    if (res && res.ok) { if (msg) msg.textContent = '✅ Terhapus.'; loadMine(); }
+    else { if (msg) msg.textContent = '❌ ' + ((res && res.error) || 'Gagal menghapus.'); btns.forEach((b) => (b.disabled = false)); }
+  } catch (_) { if (msg) msg.textContent = '❌ Terjadi kesalahan.'; btns.forEach((b) => (b.disabled = false)); }
+}
 async function loadMine() {
   const box = $('#my-rdp'); if (!box) return;
+  if (!ME) { box.innerHTML = '<span class="muted">Masuk untuk melihat &amp; mengelola server kamu.</span>'; if ($('#d-rdpcount')) $('#d-rdpcount').textContent = '—'; return; }
   try {
-    const res = await api('/api/rdp/mine'); if (!res || !res.ok) return;
+    const res = await api('/api/servers'); if (!res || !res.ok) return;
     const servers = res.servers || [];
     if ($('#d-rdpcount')) $('#d-rdpcount').textContent = servers.length;
-    box.innerHTML = servers.length ? servers.map((s) => `<div class="server-row"><div><div class="mono">🖥️ ${s.server} ${copyBtn(s.ip)}</div><div class="muted" style="font-size:12px">${s.os || 'Windows'} · ${s.region} · administrator</div></div><div class="mono">${s.password ? '🔑 ' + s.password + copyBtn(s.password) : ''}</div></div>`).join('') : '<span class="muted">Belum ada layanan. Buat lewat tab Order.</span>';
+    if (!servers.length) { box.innerHTML = '<span class="muted">Belum ada server. Buat lewat menu Order.</span>'; return; }
+    box.innerHTML = servers.map(serverCardHtml).join('');
+    $$('#my-rdp .srv-power').forEach((b) => b.addEventListener('click', onServerPower));
+    $$('#my-rdp .srv-del').forEach((b) => b.addEventListener('click', onServerDelete));
   } catch (_) {}
 }
+if ($('#srv-refresh')) $('#srv-refresh').addEventListener('click', loadMine);
 async function loadTx() {
   const box = $('#tx-list'); if (!box) return;
   try {

@@ -40,7 +40,18 @@ a{color:var(--sky2);text-decoration:none}
 .btn-ghost{background:transparent;border:1px solid var(--border2);color:var(--txt)}
 .btn-ghost:hover{border-color:var(--sky);color:var(--sky2)}
 .btn-sm{padding:8px 13px;font-size:13px}
+.btn-danger{background:rgba(248,113,113,.12);border:1px solid rgba(248,113,113,.5);color:var(--err)}
+.btn-danger:hover{background:rgba(248,113,113,.2)}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none}
+
+/* ---------- Auth (register / login) ---------- */
+.auth-block{display:flex;flex-direction:column;gap:10px;text-align:left}
+.auth-block input{width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--border2);background:#0a1425;color:var(--txt);font-family:inherit;font-size:14px}
+.auth-block input:focus{outline:none;border-color:var(--sky)}
+.auth-sep{display:flex;align-items:center;gap:10px;color:var(--muted);font-size:12px;margin:16px 0;text-transform:uppercase;letter-spacing:1px}
+.auth-sep::before,.auth-sep::after{content:"";flex:1;height:1px;background:var(--border)}
+.cred-box{background:#0a1425;border:1px dashed var(--sky);border-radius:10px;padding:12px;margin:10px 0;text-align:left;font-size:14px}
+.cred-box .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-weight:700}
 
 /* ================= APP (dashboard) ================= */
 .layout{display:flex;min-height:100vh}

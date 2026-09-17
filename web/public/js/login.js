@@ -10,6 +10,52 @@
     if (me.ok) { window.location.href = '/app'; return; }
   } catch (_) {}
 
+  const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+  // ----- Daftar akun otomatis (username + password acak) -----
+  const regBtn = document.getElementById('btn-register');
+  const regResult = document.getElementById('register-result');
+  if (regBtn) regBtn.addEventListener('click', async () => {
+    if (msgBox) msgBox.classList.add('hidden');
+    regBtn.disabled = true; regBtn.textContent = 'Membuat akun…';
+    try {
+      const r = await fetch('/api/auth/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const data = await r.json();
+      if (r.ok && data.ok) {
+        regBtn.classList.add('hidden');
+        regResult.classList.remove('hidden');
+        regResult.innerHTML =
+          '<div class="notice ok" style="margin-bottom:10px">✅ Akun berhasil dibuat! <b>Simpan kredensial ini</b> — tidak akan ditampilkan lagi.</div>' +
+          '<div class="cred-box">Username: <span class="mono">' + esc(data.username) + '</span>' +
+          ' <span class="copy" id="cp-u">salin</span><br>Password: <span class="mono">' + esc(data.password) + '</span>' +
+          ' <span class="copy" id="cp-p">salin</span></div>' +
+          '<button class="btn btn-primary" id="btn-continue" style="width:100%">Saya sudah simpan — Lanjut ke Dashboard →</button>';
+        const cpU = document.getElementById('cp-u'); if (cpU) cpU.onclick = () => navigator.clipboard.writeText(data.username);
+        const cpP = document.getElementById('cp-p'); if (cpP) cpP.onclick = () => navigator.clipboard.writeText(data.password);
+        const cont = document.getElementById('btn-continue'); if (cont) cont.onclick = () => { window.location.href = '/app'; };
+      } else { showErr(data.error || 'Gagal membuat akun.'); regBtn.disabled = false; regBtn.textContent = '✨ Daftar (Buat Akun Otomatis)'; }
+    } catch (e) { showErr('Tidak bisa menghubungi server.'); regBtn.disabled = false; regBtn.textContent = '✨ Daftar (Buat Akun Otomatis)'; }
+  });
+
+  // ----- Login username + password -----
+  const loginBtn = document.getElementById('btn-login');
+  async function doLogin() {
+    if (msgBox) msgBox.classList.add('hidden');
+    const username = (document.getElementById('login-username').value || '').trim();
+    const password = document.getElementById('login-password').value || '';
+    if (!username || !password) { showErr('Username & password wajib diisi.'); return; }
+    loginBtn.disabled = true; loginBtn.textContent = 'Masuk…';
+    try {
+      const r = await fetch('/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+      const data = await r.json();
+      if (r.ok && data.ok) { window.location.href = '/app'; }
+      else { showErr(data.error || 'Login gagal.'); loginBtn.disabled = false; loginBtn.textContent = 'Masuk'; }
+    } catch (e) { showErr('Tidak bisa menghubungi server.'); loginBtn.disabled = false; loginBtn.textContent = 'Masuk'; }
+  }
+  if (loginBtn) loginBtn.addEventListener('click', doLogin);
+  const passInput = document.getElementById('login-password');
+  if (passInput) passInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
+
   // Callback global yang dipanggil Telegram Login Widget.
   window.onTelegramAuth = async function (user) {
     try {

@@ -7,7 +7,7 @@
   <meta name="description" content="KOBONG CLOUD SERVER — One Stop Cloud Solution. Order & install RDP, VPS, Cloud9, Fastpanel. Cepat, otomatis, tanpa perlu daftar." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=3" />
+  <link rel="stylesheet" href="/css/styles.css?v=4" />
 </head>
 <body>
   <nav class="lp-nav">
@@ -45,8 +45,26 @@
     </div>
 
     <div class="login-card" id="login">
-      <h3>Masuk ke Dashboard</h3>
-      <p>Login <b>opsional</b> — bisa bayar pakai saldo &amp; lihat layanan kamu. Tanpa login pun tetap bisa order (bayar QRIS). <a href="/app">Lanjut sebagai tamu →</a></p>
+      <h3>Masuk / Daftar</h3>
+      <p>Login <b>opsional</b> — untuk bayar pakai saldo &amp; kelola server (on/off, hapus). Tanpa login pun tetap bisa order (bayar QRIS). <a href="/app">Lanjut sebagai tamu →</a></p>
+
+      <!-- Daftar akun baru (username & password acak) -->
+      <div class="auth-block">
+        <button class="btn btn-primary" id="btn-register">✨ Daftar (Buat Akun Otomatis)</button>
+        <div class="muted" style="font-size:12px;text-align:center">Klik daftar → sistem membuat <b>username &amp; password acak</b> untukmu.</div>
+      </div>
+      <div id="register-result" class="hidden"></div>
+
+      <div class="auth-sep">atau login akun</div>
+
+      <!-- Login username + password -->
+      <div class="auth-block">
+        <input id="login-username" placeholder="Username" autocomplete="username" />
+        <input id="login-password" type="password" placeholder="Password" autocomplete="current-password" />
+        <button class="btn btn-primary" id="btn-login">Masuk</button>
+      </div>
+
+      <div class="auth-sep">atau via telegram</div>
       <div id="tg-login-btn"><span class="muted" id="login-hint">Memuat tombol login…</span></div>
       <div id="login-msg" class="notice err hidden"></div>
     </div>
@@ -55,6 +73,6 @@
   <footer class="lp-foot">@kobongcloudserver — One Stop Cloud Solution · © <span id="yr"></span> KOBONG CLOUD SERVER</footer>
 
   <script>document.getElementById('yr').textContent = new Date().getFullYear();</script>
-  <script src="/js/login.js?v=3"></script>
+  <script src="/js/login.js?v=4"></script>
 </body>
 </html>

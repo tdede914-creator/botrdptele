@@ -6,7 +6,7 @@
   <title>Dashboard — KOBONG CLOUD SERVER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=3" />
+  <link rel="stylesheet" href="/css/styles.css?v=4" />
 </head>
 <body>
   <div class="backdrop" id="backdrop"></div>
@@ -196,12 +196,15 @@
         <section id="view-status" class="view">
           <div class="grid grid-3" style="margin-bottom:18px" id="stats-grid">
             <div class="card"><div class="sub">Saldo Kamu</div><div class="stat" id="d-balance">…</div></div>
-            <div class="card"><div class="sub">RDP Aktif</div><div class="stat" id="d-rdpcount">…</div></div>
-            <div class="card"><div class="sub">Telegram ID</div><div class="stat" id="d-tid" style="font-size:22px">…</div></div>
+            <div class="card"><div class="sub">Server Aktif</div><div class="stat" id="d-rdpcount">…</div></div>
+            <div class="card"><div class="sub">Akun Saya</div><div class="stat" id="d-tid" style="font-size:22px">…</div></div>
           </div>
           <div class="card">
-            <h3>Layanan Saya</h3><div class="sub">RDP/VPS yang kamu miliki (khusus akun login)</div>
-            <div id="my-rdp"><span class="muted">Masuk untuk melihat layanan kamu.</span></div>
+            <div class="row-flex" style="justify-content:space-between;align-items:flex-start">
+              <div><h3>VPS / RDP Saya</h3><div class="sub">Kelola server milikmu — nyalakan, matikan, atau hapus (khusus akun login)</div></div>
+              <button class="btn btn-ghost btn-sm" id="srv-refresh">🔄 Muat ulang</button>
+            </div>
+            <div id="my-rdp"><span class="muted">Masuk untuk melihat &amp; mengelola server kamu.</span></div>
           </div>
         </section>
 
@@ -253,6 +256,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=3"></script>
+  <script src="/js/app.js?v=4"></script>
 </body>
 </html>

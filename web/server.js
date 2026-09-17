@@ -22,6 +22,8 @@ const cloud9Service = require('./services/cloud9Service');
 const fastpanelService = require('./services/fastpanelService');
 const depositService = require('./services/depositService');
 const checkoutService = require('./services/checkoutService');
+const accountService = require('./services/accountService');
+const manageService = require('./services/manageService');
 const { getUser, getBalance, isAdmin } = require('../src/utils/userManager');
 
 const PORT = Number(process.env.WEB_PORT || 3000);
@@ -152,6 +154,22 @@ const server = http.createServer(async (req, res) => {
         clearSessionCookie(res);
         return sendJson(res, 200, { ok: true });
       }
+      // Daftar akun web: generate username + password acak, langsung login.
+      if (p === '/api/auth/register' && req.method === 'POST') {
+        const r = await accountService.register();
+        if (!r.ok) return sendJson(res, 500, { ok: false, error: r.error || 'Gagal membuat akun.' });
+        setSessionCookie(res, String(r.userId));
+        return sendJson(res, 200, { ok: true, username: r.username, password: r.password });
+      }
+      // Login akun web dengan username + password.
+      if (p === '/api/auth/login' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        const r = await accountService.login(body.username, body.password);
+        if (!r.ok) return sendJson(res, 401, { ok: false, error: r.error || 'Login gagal.' });
+        setSessionCookie(res, String(r.userId));
+        return sendJson(res, 200, { ok: true, username: r.username });
+      }
 
       // Login OPSIONAL: uid boleh null (tamu). Endpoint RDP/checkout bisa dipakai tamu;
       // pembayaran otomatis pakai saldo (bila login & cukup) atau QRIS (tamu/saldo kurang).
@@ -210,7 +228,22 @@ const server = http.createServer(async (req, res) => {
 
       if (p === '/api/me' && req.method === 'GET') {
         const bal = await getBalance(uid);
-        return sendJson(res, 200, { ok: true, telegramId: uid, balance: typeof bal === 'string' ? bal : Number(bal), isAdmin: isAdmin(uid) });
+        const username = await accountService.getUsername(uid);
+        return sendJson(res, 200, { ok: true, telegramId: uid, username: username || null, isWebAccount: accountService.isWebAccount(uid), balance: typeof bal === 'string' ? bal : Number(bal), isAdmin: isAdmin(uid) });
+      }
+      // ---- Kelola VPS/RDP milik sendiri ("VPS/RDP Saya") ----
+      if (p === '/api/servers' && req.method === 'GET') {
+        return sendJson(res, 200, { ok: true, servers: await manageService.listServers(uid) });
+      }
+      if (p === '/api/server/power' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body || !body.id) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await manageService.powerServer(uid, body.id, body.action));
+      }
+      if (p === '/api/server/delete' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (!body || !body.id) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
+        return sendJson(res, 200, await manageService.deleteServer(uid, body.id));
       }
       if (p === '/api/rdp/mine' && req.method === 'GET') {
         return sendJson(res, 200, { ok: true, servers: await rdpService.listMyRdp(uid) });
