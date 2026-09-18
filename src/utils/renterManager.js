@@ -355,6 +355,13 @@ async function consumeOnceApi(userId, apiId) {
   return false;
 }
 
+// Hapus semua token sekali-pakai milik user (bersih-bersih token yang ditinggalkan
+// tanpa jadi install). Dipanggil saat membuka menu Install RDP via API sendiri.
+async function deleteOnceApis(userId) {
+  await ensureTables();
+  try { await db.run('DELETE FROM renter_do_api WHERE user_id = ? AND once = 1', [Number(userId)]); } catch (_) {}
+}
+
 async function listApis(userId, activeOnly = false) {
   await ensureTables();
   const rows = activeOnly
@@ -529,6 +536,7 @@ module.exports = {
   countMonthlyRenters,
   addApi,
   consumeOnceApi,
+  deleteOnceApis,
   listApis,
   getApiToken,
   getDefaultApiToken,

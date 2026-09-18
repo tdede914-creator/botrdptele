@@ -767,12 +767,16 @@ async function processAddApi(bot, msg, sessionManager) {
     const returnTo = sess.returnTo;
     sessionManager.clearAdminSession(chatId);
     if (returnTo === 'open_api_rdp') {
-      await bot.sendMessage(chatId,
-        `✅ Token ${res.provider || label} diterima (Email/ID: ${res.email || '-'}).\n\n` +
-        `🔒 *Sekali pakai:* token ini TIDAK disimpan — otomatis dihapus setelah VPS dibuat.\n` +
-        `⚠️ Karena tidak disimpan, VPS/RDP ini tidak bisa di-rebuild/reset lewat bot nanti (kelola dari akun cloud kamu, atau masukkan token lagi).`,
-        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
-      );
+      // Langsung ke pemilihan region memakai token yang baru dimasukkan (sekali pakai).
+      // Token tetap dihapus otomatis setelah VPS dibuat (consumeOnceApi di createRdp).
+      const sent = await bot.sendMessage(chatId,
+        `✅ Token ${res.provider || label} diterima (Email/ID: ${res.email || '-'}).\n` +
+        `🔒 Sekali pakai — tidak disimpan. Memuat pilihan region...`);
+      try {
+        await pickApi(bot, chatId, sent.message_id, 'rdp', res.id, sessionManager);
+      } catch (e) {
+        await bot.sendMessage(chatId, `❌ Gagal memuat region: ${e.message || e}`, { reply_markup: { inline_keyboard: [[{ text: '« Coba lagi', callback_data: 'install_src_api' }]] } });
+      }
     } else {
       await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
     }
@@ -1532,27 +1536,18 @@ async function processAdminRemove(bot, msg, sessionManager) {
 // tidak ter-gate, jadi callback renter_rdp_api/regionpick/sizepick/win yang ada bisa dipakai.
 // ============================================================
 async function startOpenApiRdp(bot, chatId, messageId, sessionManager) {
-  const apis = await renterManager.listApis(chatId, true);
-  if (!apis.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId,
-      '🔑 *Install RDP via API Cloud Sendiri*\n\nKamu belum punya API cloud tersimpan. Tambahkan token API provider kamu ' +
-      '(VPS dibuat & RDP diinstall otomatis di akun cloud milikmu):',
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-        [{ text: '➕ API DigitalOcean', callback_data: 'open_api_add:digitalocean' }],
-        [{ text: '➕ API Linode', callback_data: 'open_api_add:linode' }],
-        [{ text: '➕ API AWS', callback_data: 'open_api_add:aws' }],
-        [{ text: '➕ API UpCloud', callback_data: 'open_api_add:upcloud' }],
-        [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
-      ] } }
-    );
-  }
-  const kb = apis.map(a => ([{ text: apiLabel(a), callback_data: `renter_rdp_api:${a.id}` }]));
-  kb.push([{ text: '➕ DigitalOcean', callback_data: 'open_api_add:digitalocean' }, { text: '➕ Linode', callback_data: 'open_api_add:linode' }]);
-  kb.push([{ text: '➕ AWS', callback_data: 'open_api_add:aws' }, { text: '➕ UpCloud', callback_data: 'open_api_add:upcloud' }]);
-  kb.push([{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]);
+  // Menu ini SEKALI PAKAI: token tidak disimpan/di-list. Bersihkan sisa token
+  // sekali-pakai yang mungkin ditinggalkan (ditambahkan tapi tidak jadi install).
+  try { await renterManager.deleteOnceApis(chatId); } catch (_) {}
   return safeMessageEditor.editMessage(bot, chatId, messageId,
-    '🔑 *Install RDP via API Cloud Sendiri*\n\nPilih API cloud untuk membuat VPS + install RDP:',
-    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+    '🔑 *Install RDP via API Cloud Sendiri*\n\n' +
+    'Pilih provider lalu tempel token API-nya. VPS dibuat & RDP diinstall otomatis di akun cloud milikmu.\n\n' +
+    '🔒 *Token sekali pakai* — tidak disimpan, otomatis dihapus setelah dipakai.',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
+      [{ text: '➕ DigitalOcean', callback_data: 'open_api_add:digitalocean' }, { text: '➕ Linode', callback_data: 'open_api_add:linode' }],
+      [{ text: '➕ AWS', callback_data: 'open_api_add:aws' }, { text: '➕ UpCloud', callback_data: 'open_api_add:upcloud' }],
+      [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
+    ] } });
 }
 
 async function promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider = 'digitalocean') {

@@ -432,12 +432,10 @@ async function listApiRegions(apiToken) {
   let lastErr = 'Token tidak valid.';
   for (const c of candidates) {
     try {
-      // AWS: getRegions bersifat statis (tak memvalidasi kredensial), jadi verifikasi via getAccountEmail.
-      if (c.provider === 'aws') {
-        let email = null;
-        try { email = await getAccountEmail(c.token); } catch (_) { email = null; }
-        if (!email) { lastErr = 'AWS credential tidak valid / tidak bisa diverifikasi.'; continue; }
-      }
+      // AWS: daftar region bersifat statis (tak butuh auth). Verifikasi kredensial
+      // via getAccountEmail bersifat best-effort saja — JANGAN tolak kalau gagal,
+      // karena banyak access key EC2 tidak punya izin IAM untuk baca info akun.
+      // Kredensial yang salah akan ketahuan (dan gagal) saat pembuatan VPS.
       const regions = await getRegions(c.token);
       if (regions && regions.length) {
         return { ok: true, provider: c.provider, token: c.token, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
