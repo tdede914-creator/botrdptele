@@ -760,15 +760,18 @@ async function processAddApi(bot, msg, sessionManager) {
     : provider === 'linode' ? 'Linode'
     : provider === 'upcloud' ? 'UpCloud'
     : 'DigitalOcean';
-  await bot.sendMessage(chatId, `⏳ Mengecek dan menyimpan API ${label} renter...`);
+  const isOnce = sess.returnTo === 'open_api_rdp';
+  await bot.sendMessage(chatId, `⏳ Mengecek API ${label}${isOnce ? ' (sekali pakai)' : ' renter'}...`);
   try {
-    const res = await renterManager.addApi(chatId, msg.text, provider);
+    const res = await renterManager.addApi(chatId, msg.text, provider, isOnce ? 1 : 0);
     const returnTo = sess.returnTo;
     sessionManager.clearAdminSession(chatId);
     if (returnTo === 'open_api_rdp') {
       await bot.sendMessage(chatId,
-        `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}`,
-        { reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
+        `✅ Token ${res.provider || label} diterima (Email/ID: ${res.email || '-'}).\n\n` +
+        `🔒 *Sekali pakai:* token ini TIDAK disimpan — otomatis dihapus setelah VPS dibuat.\n` +
+        `⚠️ Karena tidak disimpan, VPS/RDP ini tidak bisa di-rebuild/reset lewat bot nanti (kelola dari akun cloud kamu, atau masukkan token lagi).`,
+        { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
       );
     } else {
       await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
@@ -1015,7 +1018,11 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
   }
   // Port RDP per-provider: UpCloud=3389 (lolos firewall default), lainnya=4443.
   const rdpPort = rdpPortForToken(token);
-  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId, rdpPort });
+  // Token sekali-pakai: hapus dari DB sekarang (token sudah ada di variabel lokal
+  // `token` untuk seluruh proses install). Instance disimpan dengan api_id null.
+  let saveApiId = apiId;
+  try { if (await renterManager.consumeOnceApi(chatId, apiId)) saveApiId = null; } catch (_) {}
+  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId: saveApiId, rdpPort });
   await safeMessageEditor.editMessage(bot, chatId, messageId,
     `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
@@ -1540,7 +1547,8 @@ async function startOpenApiRdp(bot, chatId, messageId, sessionManager) {
     );
   }
   const kb = apis.map(a => ([{ text: apiLabel(a), callback_data: `renter_rdp_api:${a.id}` }]));
-  kb.push([{ text: '➕ Tambah API lain', callback_data: 'open_api_add:digitalocean' }]);
+  kb.push([{ text: '➕ DigitalOcean', callback_data: 'open_api_add:digitalocean' }, { text: '➕ Linode', callback_data: 'open_api_add:linode' }]);
+  kb.push([{ text: '➕ AWS', callback_data: 'open_api_add:aws' }, { text: '➕ UpCloud', callback_data: 'open_api_add:upcloud' }]);
   kb.push([{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]);
   return safeMessageEditor.editMessage(bot, chatId, messageId,
     '🔑 *Install RDP via API Cloud Sendiri*\n\nPilih API cloud untuk membuat VPS + install RDP:',

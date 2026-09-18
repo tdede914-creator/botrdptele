@@ -381,6 +381,9 @@ async function loadInstallInfo() {
   $('#ifp-info').textContent = 'Biaya install Fastpanel dibayar via saldo/QRIS. VPS fresh Ubuntu/Debian.';
 }
 // Install RDP via API cloud sendiri: cek token -> muat region -> muat size -> submit.
+// Token dinormalisasi server (provider auto-detect); simpan bentuk ternormalisasi
+// untuk request berikutnya supaya provider (DO/Linode/AWS/UpCloud) terdeteksi benar.
+let irdpToken = '';
 if ($('#irdp-load')) $('#irdp-load').addEventListener('click', async (e) => {
   const btn = e.currentTarget; const apiToken = $('#irdp-token').value.trim();
   if (!apiToken) { notice($('#irdp-msg'), 'err', 'Tempel API token cloud dulu.'); return; }
@@ -388,6 +391,7 @@ if ($('#irdp-load')) $('#irdp-load').addEventListener('click', async (e) => {
   try {
     const res = await api('/api/rdp/api-regions', { method: 'POST', body: JSON.stringify({ apiToken }) });
     if (!res || !res.ok) { notice($('#irdp-msg'), 'err', (res && res.error) || 'Token tidak valid.'); btn.disabled = false; return; }
+    irdpToken = res.token || apiToken;
     $('#irdp-region').innerHTML = res.regions.map((r) => `<option value="${r.slug}">${r.slug} — ${r.name}</option>`).join('') || '<option value="">(tidak ada region)</option>';
     $('#irdp-size').innerHTML = '<option value="">Memuat spesifikasi…</option>';
     $('#irdp-detail').classList.remove('hidden');
@@ -397,7 +401,7 @@ if ($('#irdp-load')) $('#irdp-load').addEventListener('click', async (e) => {
   btn.disabled = false;
 });
 async function loadIrdpSizes() {
-  const apiToken = $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value;
+  const apiToken = irdpToken || $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value;
   if (!apiToken || !regionSlug) return;
   $('#irdp-size').innerHTML = '<option value="">Memuat…</option>';
   try {
@@ -406,10 +410,11 @@ async function loadIrdpSizes() {
     $('#irdp-size').innerHTML = res.sizes.map((s) => `<option value="${s.slug}">${s.label}</option>`).join('') || '<option value="">(tidak ada)</option>';
   } catch (_) { $('#irdp-size').innerHTML = '<option value="">(gagal memuat)</option>'; }
 }
+if ($('#irdp-token')) $('#irdp-token').addEventListener('input', () => { irdpToken = ''; $('#irdp-detail').classList.add('hidden'); });
 if ($('#irdp-region')) $('#irdp-region').addEventListener('change', loadIrdpSizes);
 $('#irdp-submit').addEventListener('click', (e) => {
-  const apiToken = $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value; const sizeSlug = $('#irdp-size').value; const osVersion = $('#irdp-os').value; const rdpPassword = $('#irdp-rdppass').value.trim() || undefined;
-  if (!apiToken) { notice($('#irdp-msg'), 'err', 'API token cloud wajib diisi.'); return; }
+  const apiToken = irdpToken || $('#irdp-token').value.trim(); const regionSlug = $('#irdp-region').value; const sizeSlug = $('#irdp-size').value; const osVersion = $('#irdp-os').value; const rdpPassword = $('#irdp-rdppass').value.trim() || undefined;
+  if (!apiToken) { notice($('#irdp-msg'), 'err', 'API token cloud wajib diisi. Klik "Cek Token" dulu.'); return; }
   if (!regionSlug || !sizeSlug) { notice($('#irdp-msg'), 'err', 'Pilih region & spesifikasi dulu.'); return; }
   submitOrder('rdp_install', { apiToken, regionSlug, sizeSlug, osVersion, rdpPassword }, $('#irdp-msg'), e.currentTarget);
 });

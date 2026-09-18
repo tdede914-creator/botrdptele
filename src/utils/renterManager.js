@@ -71,6 +71,8 @@ async function ensureTables() {
   // Tier support: 'basic' | 'premium'. Existing rows default to 'basic'.
   try { await db.run("ALTER TABLE renters ADD COLUMN tier TEXT NOT NULL DEFAULT 'basic'"); } catch (_) {}
   try { await db.run("ALTER TABLE renter_pending_payments ADD COLUMN tier TEXT NOT NULL DEFAULT 'basic'"); } catch (_) {}
+  // once=1: token sekali-pakai (Install RDP via API sendiri). Dihapus otomatis setelah dipakai.
+  try { await db.run('ALTER TABLE renter_do_api ADD COLUMN once INTEGER NOT NULL DEFAULT 0'); } catch (_) {}
   initialized = true;
 }
 
@@ -87,6 +89,11 @@ function normalizeProviderToken(token, provider = 'digitalocean') {
   const clean = String(token || '').trim();
   if (!clean) return '';
   if (isLinodeToken(clean) || isAwsToken(clean) || isUpCloudToken(clean)) return clean;
+  // Auto-detect kredensial AWS mentah (AKIA.../ASIA... | SECRET [| REGION]) walau
+  // tombol provider yang dipilih salah (mis. lewat "Tambah API lain"). Ini mencegah
+  // token AWS tersimpan mentah lalu salah dilabeli "DigitalOcean".
+  const awsRaw = clean.match(/^((?:AKIA|ASIA)[A-Z0-9]{8,})\s*[|:]\s*([^|:\s]+)(?:\s*[|:]\s*([A-Za-z0-9-]+))?$/i);
+  if (awsRaw) return makeAwsToken(awsRaw[1], awsRaw[2], awsRaw[3] || 'us-east-1');
   const p = String(provider || '').toLowerCase();
   if (p === 'linode') return `linode:${clean}`;
   if (p === 'aws') {
@@ -320,19 +327,32 @@ async function countMonthlyRenters() {
   return monthly > 0 ? monthly : await countActiveRenters();
 }
 
-async function addApi(userId, token, provider = 'digitalocean') {
+async function addApi(userId, token, provider = 'digitalocean', once = 0) {
   await ensureTables();
   const clean = normalizeProviderToken(token, provider);
   if (!clean) throw new Error('EMPTY_TOKEN');
   let email = null;
   try { email = await getAccountEmail(clean); } catch (_) {}
+  const onceVal = once ? 1 : 0;
   const existing = await db.get('SELECT id, status FROM renter_do_api WHERE user_id = ? AND token = ?', [Number(userId), clean]);
   if (existing && existing.id) {
-    await db.run('UPDATE renter_do_api SET status = 1, email = COALESCE(?, email) WHERE id = ?', [email, existing.id]);
-    return { id: existing.id, email, exists: true, provider: providerName(clean) };
+    await db.run('UPDATE renter_do_api SET status = 1, email = COALESCE(?, email), once = ? WHERE id = ?', [email, onceVal, existing.id]);
+    return { id: existing.id, email, exists: true, provider: providerName(clean), once: onceVal };
   }
-  const res = await db.run('INSERT INTO renter_do_api (user_id, token, email, status, created_at) VALUES (?, ?, ?, 1, ?)', [Number(userId), clean, email, nowSec()]);
-  return { id: res && res.id, email, exists: false, provider: providerName(clean) };
+  const res = await db.run('INSERT INTO renter_do_api (user_id, token, email, status, once, created_at) VALUES (?, ?, ?, 1, ?, ?)', [Number(userId), clean, email, onceVal, nowSec()]);
+  return { id: res && res.id, email, exists: false, provider: providerName(clean), once: onceVal };
+}
+
+// Konsumsi token sekali-pakai: hapus baris jika once=1. Return true jika dihapus.
+async function consumeOnceApi(userId, apiId) {
+  await ensureTables();
+  if (!apiId) return false;
+  const row = await db.get('SELECT once FROM renter_do_api WHERE user_id = ? AND id = ?', [Number(userId), Number(apiId)]);
+  if (row && Number(row.once) === 1) {
+    await db.run('DELETE FROM renter_do_api WHERE user_id = ? AND id = ?', [Number(userId), Number(apiId)]);
+    return true;
+  }
+  return false;
 }
 
 async function listApis(userId, activeOnly = false) {
@@ -508,6 +528,7 @@ module.exports = {
   countActiveRenters,
   countMonthlyRenters,
   addApi,
+  consumeOnceApi,
   listApis,
   getApiToken,
   getDefaultApiToken,

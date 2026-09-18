@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const net = require('net');
 
 const vpsManager = require('../../src/utils/vpsManager');
-const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken } = require('../../src/utils/doApi');
+const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken, makeAwsToken, getAccountEmail } = require('../../src/utils/doApi');
 const { isAdmin, getBalance, deductBalance, addBalance } = require('../../src/utils/userManager');
 const { installDedicatedRDP } = require('../../src/utils/dedicatedRdpInstaller');
 const RDPMonitor = require('../../src/utils/rdpMonitor');
@@ -402,19 +402,52 @@ function baseUbuntuForToken(token) {
   return isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
 }
 
-// Validasi token + daftar region yang tersedia di akun cloud user.
-async function listApiRegions(apiToken) {
-  const token = String(apiToken || '').trim();
-  if (!token) return { ok: false, error: 'API token cloud wajib diisi.' };
-  try {
-    const provider = providerOfToken(token);
-    const regions = await getRegions(token);
-    if (!regions || !regions.length) return { ok: false, error: 'Token valid tapi tidak ada region tersedia.' };
-    return { ok: true, provider, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
-  } catch (e) {
-    const msg = (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || e;
-    return { ok: false, error: 'Token API tidak valid / gagal terhubung ke cloud: ' + msg };
+// Ubah token mentah yang di-paste user menjadi kandidat token internal doApi.
+// Mendukung: UpCloud (ucat_...), AWS (aws:... atau "ACCESS_KEY|SECRET[|REGION]"),
+// Linode (linode:... atau PAT mentah), DigitalOcean (token mentah).
+// DO & Linode PAT sama-sama hex tanpa prefiks -> ambigu, jadi dicoba DO dulu lalu Linode.
+function normalizeCloudTokenCandidates(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return [];
+  if (t.startsWith('ucat_')) return [{ provider: 'upcloud', token: t }];
+  if (t.startsWith('aws:')) return [{ provider: 'aws', token: t }];
+  if (t.startsWith('linode:')) return [{ provider: 'linode', token: t }];
+  // AWS mentah: "AKIA.../ASIA... | SECRET [| REGION]" (pemisah | atau :)
+  const awsRaw = t.match(/^((?:AKIA|ASIA)[A-Z0-9]{8,})\s*[|:]\s*([^|:\s]+)(?:\s*[|:]\s*([A-Za-z0-9-]+))?$/i);
+  if (awsRaw) return [{ provider: 'aws', token: makeAwsToken(awsRaw[1], awsRaw[2], awsRaw[3] || 'us-east-1') }];
+  if (t.includes('|')) {
+    const p = t.split('|').map((x) => x.trim());
+    if (p.length >= 2 && p[0] && p[1]) return [{ provider: 'aws', token: makeAwsToken(p[0], p[1], p[2] || 'us-east-1') }];
   }
+  // Ambigu: DigitalOcean atau Linode. Coba DO dulu, lalu Linode.
+  return [{ provider: 'digitalocean', token: t }, { provider: 'linode', token: 'linode:' + t }];
+}
+
+// Validasi token + daftar region yang tersedia di akun cloud user.
+// Mengembalikan juga `token` (bentuk internal ternormalisasi) yang HARUS dipakai
+// frontend untuk request berikutnya (sizes + order) agar provider terdeteksi benar.
+async function listApiRegions(apiToken) {
+  const candidates = normalizeCloudTokenCandidates(apiToken);
+  if (!candidates.length) return { ok: false, error: 'API token cloud wajib diisi.' };
+  let lastErr = 'Token tidak valid.';
+  for (const c of candidates) {
+    try {
+      // AWS: getRegions bersifat statis (tak memvalidasi kredensial), jadi verifikasi via getAccountEmail.
+      if (c.provider === 'aws') {
+        let email = null;
+        try { email = await getAccountEmail(c.token); } catch (_) { email = null; }
+        if (!email) { lastErr = 'AWS credential tidak valid / tidak bisa diverifikasi.'; continue; }
+      }
+      const regions = await getRegions(c.token);
+      if (regions && regions.length) {
+        return { ok: true, provider: c.provider, token: c.token, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
+      }
+      lastErr = 'Token valid tapi tidak ada region tersedia.';
+    } catch (e) {
+      lastErr = (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || String(e);
+    }
+  }
+  return { ok: false, error: 'Token API tidak valid / gagal terhubung ke cloud: ' + lastErr };
 }
 
 // Daftar spesifikasi (size) untuk token + region.

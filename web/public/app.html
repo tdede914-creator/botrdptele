@@ -6,7 +6,7 @@
   <title>Dashboard — KOBONG CLOUD SERVER</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/styles.css?v=7" />
+  <link rel="stylesheet" href="/css/styles.css?v=8" />
 </head>
 <body>
   <div class="backdrop" id="backdrop"></div>
@@ -149,9 +149,9 @@
 
           <div class="card subpane" id="install-rdp">
             <h3>Install RDP via API Cloud Sendiri</h3>
-            <div class="sub">Tempel <b>API token cloud</b> kamu (DigitalOcean / Linode / AWS / UpCloud). Sistem otomatis membuat VPS di akun cloud-mu lalu install Windows RDP — <b>tanpa perlu kredensial VPS manual</b>. Kamu hanya bayar biaya jasa install (saldo/QRIS).</div>
+            <div class="sub">Tempel <b>API token cloud</b> kamu — sistem otomatis membuat VPS di akun cloud-mu lalu install Windows RDP, <b>tanpa perlu kredensial VPS manual</b>. Bayar hanya biaya jasa install (saldo/QRIS).<br><span class="muted" style="font-size:12px">Format: DigitalOcean/Linode/UpCloud = tempel token langsung. <b>AWS</b> = <code>ACCESS_KEY_ID|SECRET_ACCESS_KEY</code> (opsional <code>|REGION</code>).</span></div>
             <label>API Token Cloud</label>
-            <input id="irdp-token" placeholder="Tempel API token (DO / Linode / AWS / UpCloud)" autocomplete="off" />
+            <input id="irdp-token" placeholder="DO/Linode/UpCloud: token · AWS: ACCESS_KEY|SECRET" autocomplete="off" />
             <div class="row-flex" style="margin:10px 0"><button class="btn btn-ghost" id="irdp-load">🔍 Cek Token &amp; Muat Region</button></div>
             <div id="irdp-detail" class="hidden">
               <div class="grid grid-2">
@@ -279,6 +279,6 @@
     </div>
   </div>
 
-  <script src="/js/app.js?v=7"></script>
+  <script src="/js/app.js?v=8"></script>
 </body>
 </html>
