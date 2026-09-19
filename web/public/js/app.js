@@ -2,6 +2,7 @@
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
 const fmtRp = (n) => (typeof n === 'string' ? n : 'Rp ' + Number(n || 0).toLocaleString('id-ID'));
+const fmtDate = (sec) => { try { if (!sec) return '-'; return new Date(Number(sec) * 1000).toLocaleString('id-ID', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' }); } catch (_) { return '-'; } };
 const FINAL = ['ready', 'failed', 'installing_timeout'];
 
 async function api(path, opts = {}) {
@@ -77,24 +78,51 @@ $('#auth-btn').addEventListener('click', async (e) => {
   } catch (_) {}
 })();
 
-// ---------- job registry (persist across refresh) ----------
+// ---------- job registry (persist across refresh, browser close & server restart) ----------
+// LS_JOBS = daftar id job yang dilacak. LS_SNAP = snapshot terakhir tiap job
+// (status/pesan/detail server). Snapshot dibaca saat halaman dibuka & dipakai
+// sebagai fallback kalau server kehilangan job (restart/expired), sehingga kartu
+// hasil (BERHASIL/GAGAL) TIDAK hilang sampai user menutupnya sendiri.
 const LS_JOBS = 'kobong_jobs';
+const LS_SNAP = 'kobong_job_snap';
 const jobCache = {};
 let pollTimer = null;
 function lsGetJobs() { try { return JSON.parse(localStorage.getItem(LS_JOBS) || '[]'); } catch (_) { return []; } }
 function lsSetJobs(a) { localStorage.setItem(LS_JOBS, JSON.stringify(a.slice(-8))); }
+function lsGetSnap() { try { return JSON.parse(localStorage.getItem(LS_SNAP) || '{}'); } catch (_) { return {}; } }
+function lsSetSnap(o) { try { localStorage.setItem(LS_SNAP, JSON.stringify(o)); } catch (_) {} }
+function saveSnap(id, job) { const s = lsGetSnap(); s[id] = job; lsSetSnap(s); }
+function delSnap(id) { const s = lsGetSnap(); delete s[id]; lsSetSnap(s); }
+// Muat snapshot tersimpan ke cache saat load, supaya kartu langsung tampil sebelum poll.
+Object.assign(jobCache, lsGetSnap());
 function trackJob(id) { const a = lsGetJobs(); if (!a.includes(id)) { a.push(id); lsSetJobs(a); } ensurePolling(); renderActiveJobs(); }
-window.dismissJob = (id) => { lsSetJobs(lsGetJobs().filter((x) => x !== id)); delete jobCache[id]; renderActiveJobs(); };
+window.dismissJob = (id) => { lsSetJobs(lsGetJobs().filter((x) => x !== id)); delete jobCache[id]; delSnap(id); renderActiveJobs(); };
 function ensurePolling() { if (pollTimer) return; pollTimer = setInterval(pollAll, 4000); pollAll(); }
 async function pollAll() {
   const ids = lsGetJobs();
   if (!ids.length) { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } renderActiveJobs(); return; }
   let anyActive = false;
+  const snap = lsGetSnap();
   for (const id of ids) {
     try {
       const { ok, job } = await api('/api/job/' + id);
-      if (ok && job) { jobCache[id] = job; if (!FINAL.includes(job.status)) anyActive = true; }
-      else { lsSetJobs(lsGetJobs().filter((x) => x !== id)); delete jobCache[id]; }
+      if (ok && job) { jobCache[id] = job; saveSnap(id, job); if (!FINAL.includes(job.status)) anyActive = true; }
+      else {
+        // Server sudah tidak punya job ini (restart/expired). Pertahankan snapshot terakhir.
+        const prev = jobCache[id] || snap[id];
+        if (prev) {
+          if (!FINAL.includes(prev.status)) {
+            // Proses terputus (server restart di tengah instalasi) — tandai jelas, jangan hilang.
+            jobCache[id] = { ...prev, status: 'failed', progress: prev.progress || 0, message: 'Proses terputus (server restart). Cek menu VPS/RDP Saya untuk memastikan status server.' };
+            saveSnap(id, jobCache[id]);
+          } else {
+            jobCache[id] = prev;
+          }
+        } else {
+          // Tidak ada jejak sama sekali -> lepas dari daftar.
+          lsSetJobs(lsGetJobs().filter((x) => x !== id));
+        }
+      }
     } catch (_) {}
   }
   renderActiveJobs();
@@ -179,11 +207,21 @@ async function submitOrder(kind, params, msgEl, btn) {
 // ---------- VPS/RDP Saya (kelola server sendiri) ----------
 const typeIcon = (t) => ({ RDP: '🖥️', Cloud9: '💻', Fastpanel: '🎛️', VPS: '🧊' }[t] || '🖥️');
 function serverCardHtml(s) {
+  const pass = s.password ? `<span class="mono">${s.password}</span> ${copyBtn(s.password)}` : '<span class="muted">—</span>';
+  const details = `<div style="margin-top:10px">
+      <div class="server-row"><span class="muted">Server</span><span class="mono">${s.server} ${s.ip ? copyBtn(s.ip) : ''}</span></div>
+      <div class="server-row"><span class="muted">Username</span><span class="mono">${s.username || '-'}</span></div>
+      <div class="server-row"><span class="muted">Password</span><span>${pass}</span></div>
+      <div class="server-row"><span class="muted">OS</span><span class="mono">${s.os || '-'}</span></div>
+      <div class="server-row"><span class="muted">Region</span><span class="mono">${s.region || '-'}</span></div>
+      ${s.expiresAt ? `<div class="server-row"><span class="muted">Masa aktif s/d</span><span class="mono">${fmtDate(s.expiresAt)}</span></div>` : ''}
+    </div>`;
   return `<div class="jobcard" data-sid="${s.id}">
     <div class="row-flex" style="justify-content:space-between;gap:10px;flex-wrap:wrap">
-      <div><b>${typeIcon(s.type)} ${s.server}</b> <span class="tag ok">${s.type}</span> ${s.ip ? copyBtn(s.ip) : ''}</div>
-      <div class="muted" style="font-size:12px">${s.os || '-'} · ${s.region} · ${s.size}</div>
+      <div><b>${typeIcon(s.type)} ${s.type}</b> <span class="tag ok">${s.size}</span></div>
+      <div class="muted" style="font-size:12px">${s.region}</div>
     </div>
+    ${details}
     <div class="row-flex" style="margin-top:10px;gap:8px;flex-wrap:wrap">
       <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="on"${s.hasDroplet ? '' : ' disabled'}>▶️ Nyalakan</button>
       <button class="btn btn-ghost btn-sm srv-power" data-id="${s.id}" data-action="off"${s.hasDroplet ? '' : ' disabled'}>⏸️ Matikan</button>

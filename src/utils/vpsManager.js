@@ -454,6 +454,7 @@ async function listUserVps(userId) {
   // Backward compatibility: returns both VPS and RDP instances (active)
   return await db.all(
     `SELECT vi.id, vi.droplet_id, vi.ip, vi.region, vi.image, vi.created_at, vi.rdp_port,
+            vi.root_password, vi.expires_at, vi.duration_days,
             vp.product_type, vp.size_slug, vp.price
      FROM vps_instances vi
      LEFT JOIN vps_products vp ON vp.id = vi.product_id

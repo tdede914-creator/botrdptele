@@ -73,7 +73,10 @@ async function listServers(userId) {
       region: r.region || '-',
       os: osLabel(r.image),
       size: r.size_slug || '-',
+      username: type === 'RDP' ? 'administrator' : 'root',
+      password: r.root_password || null,
       createdAt: r.created_at || null,
+      expiresAt: r.expires_at || null,
       hasDroplet: !!r.droplet_id
     };
   });
