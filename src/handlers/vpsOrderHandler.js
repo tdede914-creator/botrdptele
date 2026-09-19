@@ -933,7 +933,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       `🌐 IP: \`${ip}\`\n` +
       `🪟 Windows: *${osName}*\n` +
       `🔒 Port RDP: *${(rebuilt.provider === 'upcloud') ? RDP_PORT_UPCLOUD : RDP_PORT_DEFAULT}*\n\n` +
-      `⏳ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot).\n` +
+      `⏳ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot).\n` +
       `🔔 Kamu akan dapat notifikasi saat RDP siap.`,
       { parse_mode: 'Markdown' }
     );

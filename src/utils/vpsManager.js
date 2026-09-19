@@ -442,11 +442,12 @@ async function incrementProductSlotDuration(productId, durationDays) {
 
 
 async function createVpsInstance({ userId, apiId, productId, dropletId, ip, region, image, rootPassword, expiresAt = null, durationDays = null, rdpPort = null }) {
-  await db.run(
+  const res = await db.run(
     `INSERT INTO vps_instances (user_id, api_id, origin_api_id, product_id, droplet_id, ip, region, image, root_password, created_at, expires_at, duration_days, rdp_port, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [userId, apiId, apiId, productId, dropletId, ip, region, image, rootPassword, Math.floor(Date.now() / 1000), expiresAt, durationDays, rdpPort]
   );
+  return res && res.id;
 }
 
 async function listUserVps(userId) {

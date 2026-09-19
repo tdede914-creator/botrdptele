@@ -234,6 +234,17 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
     let dropletId = null;
     let sshKey = null;      // UpCloud: auth pakai private key
     let sshUser = 'root';
+    let vpsRowId = null;
+    let settled = false;
+    // Instalasi gagal setelah VPS dibuat: hapus droplet, kembalikan slot, tandai
+    // instance terhapus, dan refund saldo pembayar (login/saldo). Idempotent.
+    const failCleanupRefund = async () => {
+      if (settled) return; settled = true;
+      try { if (dropletId) await deleteDroplet(token, dropletId, regionSlug); } catch (_) {}
+      try { await releaseOrderSlot(productId, d); } catch (_) {}
+      try { if (vpsRowId) await vpsManager.markVpsDeleted(vpsRowId); } catch (_) {}
+      if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+    };
     try {
       const created = await createDroplet(token, hostname, regionSlug, createSizeSlug, baseImage, cloudInit);
       dropletId = created.dropletId;
@@ -259,7 +270,7 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
       const nowSec = Math.floor(Date.now() / 1000);
       const expiresAt = nowSec + (d * 86400);
       try { await require('../../src/utils/userManager').getUser(uid); } catch (_) {} // pastikan baris users ada (FK), termasuk tamu (uid 0)
-      await vpsManager.createVpsInstance({
+      vpsRowId = await vpsManager.createVpsInstance({
         userId: uid, apiId: prod.api_id, productId: prod.id, dropletId, ip,
         region: regionSlug, image: `rdp:${selectedOS.version}`, rootPassword: rdpPass,
         expiresAt, durationDays: d, rdpPort
@@ -269,7 +280,8 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
 
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
       if (!sshReady) {
-        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS lalu rebuild.' });
+        await failCleanupRefund();
+        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'VPS gagal boot / SSH tidak siap. VPS dihapus' + (refund ? ' & saldo dikembalikan.' : '.') });
         return;
       }
 
@@ -298,11 +310,13 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
         setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
         try { const n = require('./notify'); n.orderSuccess({ event: 'RDP', ip, spec: `RAM ${prod.ram}GB / ${prod.core} CORE`, durationDays: d, apiId: prod.api_id, region: regionSlug, windows: selectedOS.name, buyerId: uid }); n.testimonial({ productName: `RDP ${selectedOS.name}` }); } catch (_) {}
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        await failCleanupRefund();
+        setJob(jobId, { status: 'failed', step: 'monitor', message: 'RDP tidak online dalam ' + Math.round(RDP_MONITOR_TIMEOUT_MS / 60000) + ' menit — dianggap gagal. VPS dihapus' + (refund ? ' & saldo dikembalikan.' : '.'), progress: 100 });
       }
     } catch (e) {
       console.error('[web] provisionOrder error:', e);
-      setJob(jobId, { status: 'failed', step: 'error', message: 'Terjadi kesalahan: ' + (e.message || e) });
+      try { await failCleanupRefund(); } catch (_) {}
+      setJob(jobId, { status: 'failed', step: 'error', message: 'Instalasi gagal: ' + (e.message || e) + (refund ? ' (saldo dikembalikan).' : '') });
     }
   })();
 
@@ -519,7 +533,11 @@ async function provisionInstallOwnApi(uid, { apiToken, regionSlug, sizeSlug, osV
       }
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
-      if (!sshReady) { setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS di akun cloud kamu, lalu ulangi.' }); return; }
+      if (!sshReady) {
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap di VPS akun cloud kamu.' + (refund ? ' Biaya install dikembalikan.' : '') });
+        return;
+      }
 
       setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
       const installCfg = { osVersion: selectedOS.version, password: rdpPass, provider, rdpPort };
@@ -543,7 +561,8 @@ async function provisionInstallOwnApi(uid, { apiToken, regionSlug, sizeSlug, osV
       if (result && result.success && result.rdpReady) {
         setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server });
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'monitor', message: 'RDP tidak online dalam ' + Math.round(RDP_MONITOR_TIMEOUT_MS / 60000) + ' menit — dianggap gagal.' + (refund ? ' Biaya install dikembalikan.' : '') + ' VPS bare-Ubuntu tetap ada di akun cloud kamu.', progress: 100, server });
       }
     } catch (e) {
       console.error('[web] provisionInstallOwnApi error:', e);

@@ -1028,7 +1028,7 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
   try { if (await renterManager.consumeOnceApi(chatId, apiId)) saveApiId = null; } catch (_) {}
   await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId: saveApiId, rdpPort });
   await safeMessageEditor.editMessage(bot, chatId, messageId,
-    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
+    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
   );
 
@@ -1353,7 +1353,7 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
       }
 
       const rdpPort = rdpPortForToken(token);
-      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: ' + rdpPort + '\n\nEstimasi 30-40 menit.');
+      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: ' + rdpPort + '\n\nEstimasi ±15-25 menit.');
 
       // BUGFIX (save password BEFORE install): previously saved AFTER
       // `await installPromise`. If installPromise rejected or the user

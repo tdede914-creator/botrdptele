@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const net = require('net');
-const { isAdmin, getBalance, deductBalance } = require('../utils/userManager');
+const { isAdmin, getBalance, deductBalance, addBalance } = require('../utils/userManager');
 const { getRegions, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken } = require('../utils/doApi');
 const vpsManager = require('../utils/vpsManager');
 const { notifyOrderSuccess, notifyOrderTestimonial } = require('../utils/orderNotifier');
@@ -412,7 +412,7 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
   const nowSec = Math.floor(Date.now() / 1000);
   const expiresAt = nowSec + (Number(durationDays) * 86400);
 
-  await vpsManager.createVpsInstance({
+  const vpsRowId = await vpsManager.createVpsInstance({
     userId: uid,
     apiId: prod.api_id,
     productId: prod.id,
@@ -431,13 +431,24 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
   // Deduct balance only. Slot was already reserved before provisioning started.
   if (!isAdmin(uid)) await deductBalance(uid, totalCost);
 
+  // Jika instalasi gagal (SSH tak siap / installer error / tidak online dalam timeout):
+  // hapus droplet, kembalikan slot, tandai instance terhapus, dan REFUND saldo. Idempotent.
+  let orderSettled = false;
+  const refundAndCleanup = async () => {
+    if (orderSettled) return; orderSettled = true;
+    try { await deleteDroplet(token, dropletId, regionSlug); } catch (_) {}
+    try { await vpsManager.incrementProductSlotDuration(productId, Number(durationDays)); } catch (_) {}
+    try { if (vpsRowId) await vpsManager.markVpsInstanceDeleted(vpsRowId); } catch (_) {}
+    if (!isAdmin(uid)) { try { await addBalance(uid, totalCost); } catch (_) {} }
+  };
+
   // Start install process (background-ish with monitoring)
   await safeMessageEditor.editMessage(bot, chatId, messageId,
     '🚀 Memulai instalasi Windows RDP otomatis...\n\n' +
     `🌐 IP: ${ip}\n` +
     `💿 Windows: ${selectedOS.name}\n` +
     `🔒 Port RDP: ${rdpPort}\n\n` +
-    '⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot).\n' +
+    '⏰ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot).\n' +
     '🔔 Kamu akan dapat notifikasi saat RDP siap.',
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] } }
   );
@@ -451,7 +462,8 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
       // Wait for SSH to be ready (droplet booting can take time)
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
       if (!sshReady) {
-        await bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
+        await refundAndCleanup();
+        await bot.sendMessage(chatId, `❌ Instalasi RDP gagal (VPS tidak boot/SSH tidak siap). VPS dihapus${!isAdmin(uid) ? ' & saldo Rp ' + totalCost.toLocaleString() + ' dikembalikan' : ''}.`);
         return;
       }
 
@@ -585,38 +597,36 @@ await bot.sendMessage(
 		            await notifyOrderTestimonial(bot, { productName: 'RDP' });
 
 } else {
-            // BUGFIX: on monitor timeout, still hand the user their password.
-            // Rebuild is now a last resort — often the RDP just needs a few
-            // more minutes and works fine on a manual connect attempt.
-            // Password was already saved to DB during createVpsInstance() above.
-            let timeoutCard = buildTimeoutCardMarkdown({
-              ip, port: rdpPort, hostname, osName: selectedOS.name,
-              region: regionSlug, password: rdpPass,
-              elapsedMin: rdpResult.totalTime || Math.round(RDP_MONITOR_TIMEOUT_MS / 60000)
-            });
+            // RDP tidak online dalam batas waktu (25 menit) -> dianggap GAGAL.
+            // Hapus VPS, kembalikan stok, dan refund saldo pembeli.
+            const elapsed = rdpResult.totalTime || Math.round(RDP_MONITOR_TIMEOUT_MS / 60000);
+            await refundAndCleanup();
             await safeMessageEditor.editMessage(bot, chatId, messageId,
-              timeoutCard,
-              {
-                parse_mode: 'Markdown',
-                disable_web_page_preview: true,
-                reply_markup: buildTimeoutCardKeyboard({ ip, port: rdpPort, password: rdpPass })
-              }
+              `❌ Instalasi RDP gagal.\n\n` +
+              `RDP tidak online dalam ${elapsed} menit sehingga dianggap gagal. ` +
+              `VPS sudah dihapus${!isAdmin(uid) ? ` & saldo Rp ${totalCost.toLocaleString()} dikembalikan` : ''}.\n\n` +
+              `Silakan coba order lagi (boleh pilih region/provider lain).`,
+              { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] } }
             );
           }
         } catch (e) {
           console.error('RDP monitor error:', e);
+          try { await refundAndCleanup(); } catch (_) {}
+          try { await bot.sendMessage(chatId, `❌ Instalasi RDP gagal. VPS dihapus${!isAdmin(uid) ? ' & saldo dikembalikan' : ''}. Silakan order lagi.`); } catch (_) {}
         }
       }, 15000);
 
       // Avoid unhandled rejection if install fails quickly
       installPromise.catch(async (err) => {
         console.error('Install error:', err);
-        await bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
+        try { await refundAndCleanup(); } catch (_) {}
+        try { await bot.sendMessage(chatId, `❌ Instalasi RDP gagal. VPS dihapus${!isAdmin(uid) ? ' & saldo dikembalikan' : ''}. Silakan order lagi.`); } catch (_) {}
       });
 
     } catch (err) {
       console.error('Order RDP error:', err);
-      await bot.sendMessage(chatId, '❌ Instalasi RDP gagal, silahkan cek menu VPS&RDP Saya lalu lakukan rebuild.');
+      try { await refundAndCleanup(); } catch (_) {}
+      await bot.sendMessage(chatId, `❌ Instalasi RDP gagal. VPS dihapus${!isAdmin(uid) ? ' & saldo dikembalikan' : ''}. Silakan order lagi.`);
     }
   })();
 }
