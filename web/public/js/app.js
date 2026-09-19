@@ -18,12 +18,11 @@ function copyBtn(t) { return `<span class="copy" onclick="navigator.clipboard.wr
 let ME = null;
 function applyAuthUI() {
   const logged = !!ME;
-  const badge = $('#guest-badge'); if (badge) badge.classList.toggle('hidden', logged);
   const pill = $('#balance-pill'); if (pill) pill.classList.toggle('hidden', !logged);
   if (logged && $('#balance')) $('#balance').textContent = fmtRp(ME.balance);
   const authBtn = $('#auth-btn'); if (authBtn) { authBtn.textContent = logged ? 'Keluar' : 'Masuk'; authBtn.dataset.act = logged ? 'logout' : 'login'; }
   if ($('#d-balance')) $('#d-balance').textContent = logged ? fmtRp(ME.balance) : '—';
-  if ($('#d-tid')) $('#d-tid').textContent = logged ? (ME.username || ME.telegramId) : 'Tamu';
+  if ($('#d-tid')) $('#d-tid').textContent = logged ? (ME.username || ME.telegramId) : '—';
   const depNav = document.querySelector('.navitem[data-view="deposit"]'); if (depNav) depNav.classList.toggle('hidden', !logged);
 }
 async function loadMe() { const me = await api('/api/me'); ME = (me && me.ok) ? me : null; applyAuthUI(); return ME; }
@@ -458,8 +457,10 @@ $('#dep-submit').addEventListener('click', async (e) => {
 (async function () {
   try {
     const me = await loadMe();
+    // Wajib login: mode tamu dihapus. Kalau belum login, kembali ke halaman depan (login/daftar).
+    if (!me) { window.location.href = '/'; return; }
     await Promise.all([loadRdpProducts(), loadVpsProducts(), loadCloud9Products(), loadFastpanelProducts(), loadInstallInfo()]);
-    if (me) { await loadMine(); await loadTx(); }
+    await loadMine(); await loadTx();
     renderActiveJobs();
     if (lsGetJobs().length) ensurePolling();
     if (lsGetCO().length) ensureCOPolling();

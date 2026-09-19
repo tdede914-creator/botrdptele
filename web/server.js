@@ -171,8 +171,8 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { ok: true, username: r.username });
       }
 
-      // Login OPSIONAL: uid boleh null (tamu). Endpoint RDP/checkout bisa dipakai tamu;
-      // pembayaran otomatis pakai saldo (bila login & cukup) atau QRIS (tamu/saldo kurang).
+      // Mode tamu DIHAPUS: order wajib login (lihat cek di /api/order). Katalog GET
+      // tetap publik untuk ditampilkan, tapi aksi order butuh sesi login.
       const uid = sessionUser(req);
 
       // ---- Endpoint yang boleh diakses tamu ----
@@ -205,6 +205,8 @@ const server = http.createServer(async (req, res) => {
       // Endpoint order/install GENERIK untuk semua layanan.
       // body = { kind: 'rdp_order'|'vps_order'|'cloud9_order'|'fastpanel_order'|'rdp_install'|'cloud9_install'|'fastpanel_install', params:{...} }
       if (p === '/api/order' && req.method === 'POST') {
+        // Mode tamu dihapus: order wajib login/daftar dulu (menghindari error order tamu pasca-QRIS).
+        if (!uid) return sendJson(res, 401, { ok: false, error: 'Silakan login / daftar akun dulu untuk order.' });
         const body = await readBody(req);
         if (!body || !body.kind) return sendJson(res, 400, { ok: false, error: 'Body tidak valid.' });
         return sendJson(res, 200, await checkoutService.start(uid, body.kind, body.params || {}));
