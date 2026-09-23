@@ -164,37 +164,16 @@ async function recreateDroplet(inst, serviceType, { namePrefix, region, size }) 
     return { ok: true, ip, dropletId: created.dropletId, info, image: baseImage, sshPrivateKey: created.sshPrivateKey || null, sshUsername: created.sshUsername || null };
   };
 
-  let tokenInfo = await resolveToken(inst, true);
-  if (!tokenInfo.token) throw new Error('API cloud pembuatan awal tidak ditemukan & tidak ada API fallback yang tersedia.');
+  // REBUILD SELALU PROVIDER YANG SAMA: hanya API asal instance, tanpa fallback ke provider lain.
+  const tokenInfo = await resolveToken(inst, false);
+  if (!tokenInfo.token) throw new Error('API provider asal server ini tidak ditemukan / nonaktif. Rebuild harus memakai provider yang sama — aktifkan kembali API tersebut lalu coba lagi.');
 
-  let made = await createWith(tokenInfo);
-  if (!made.ok && tokenInfo.fromOriginal) {
-    const fbInfo = await resolveToken(inst, true, tokenInfo.apiId);
-    if (fbInfo.token && Number(fbInfo.apiId) !== Number(tokenInfo.apiId)) {
-      const fbMade = await createWith(fbInfo);
-      if (fbMade.ok) made = fbMade;
-    }
-  }
+  const made = await createWith(tokenInfo);
   if (!made.ok) throw new Error(made.error || 'Gagal membuat droplet baru.');
 
-  tokenInfo = made.info;
   const dropletId = made.dropletId;
   const ip = made.ip;
   const usedImage = made.image || ubuntuImageForToken(tokenInfo.token);
-
-  // Rebalance stok bila memakai API/produk fallback.
-  if (!tokenInfo.fromOriginal && tokenInfo.productId) {
-    try {
-      await vpsManager.decrementProductSlotDuration(tokenInfo.productId, Number(inst.duration_days) || 30);
-      if (inst.product_id && Number(inst.product_id) !== Number(tokenInfo.productId)) {
-        await vpsManager.incrementProductSlotDuration(inst.product_id, Number(inst.duration_days) || 30);
-      }
-      await vpsManager.updateVpsInstanceApiProduct(inst.id, tokenInfo.apiId, tokenInfo.productId);
-    } catch (e) {
-      try { await deleteDroplet(tokenInfo.token, dropletId, region); } catch (_) {}
-      throw e;
-    }
-  }
 
   // Update baris yang SAMA. Expired date TIDAK diubah (updateVpsInstanceDroplet tidak menyentuh expires_at/duration_days).
   await vpsManager.updateVpsInstanceDroplet(inst.id, dropletId, ip, region, usedImage, newPass);

@@ -1280,14 +1280,20 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
   const x = await renterManager.getInstance(chatId, instanceId);
   if (!x) return bot.sendMessage(chatId, '❌ Data tidak ditemukan.');
   const token = x.api_id ? await renterManager.getApiToken(chatId, x.api_id) : await renterManager.getDefaultApiToken(chatId);
-  if (!token) return bot.sendMessage(chatId, '❌ API cloud aktif tidak ditemukan. Aktifkan/tambahkan API dulu.');
 
+  // DELETE boleh dilakukan walau API sudah tidak ada (biar entri stale/menumpuk bisa
+  // dibersihkan dari daftar). Kalau token ada, sekalian hapus droplet-nya.
   if (action === 'delete') {
     await safeMessageEditor.editMessage(bot, chatId, messageId, '⏳ Menghapus server renter...', { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } });
-    if (x.droplet_id) await deleteDroplet(token, x.droplet_id, x.region || null);
+    if (x.droplet_id && token) { try { await deleteDroplet(token, x.droplet_id, x.region || null); } catch (_) {} }
     await renterManager.markInstanceDeleted(chatId, instanceId);
-    return bot.sendMessage(chatId, '✅ Server berhasil dihapus.');
+    return bot.sendMessage(chatId, token
+      ? '✅ Server berhasil dihapus.'
+      : '✅ Dihapus dari daftar. (API sudah tidak ada — kalau VPS-nya masih hidup, hapus manual di dashboard cloud kamu.)');
   }
+
+  // Aksi selain delete (rebuild/reset) butuh token API aktif.
+  if (!token) return bot.sendMessage(chatId, '❌ API cloud aktif tidak ditemukan. Aktifkan/tambahkan API dulu.');
 
   if (action === 'reset_vps') {
     const newPass = genAlphaNum(14);

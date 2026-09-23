@@ -407,6 +407,8 @@ async function getBestApiToken(userId, apiId = null) {
 async function deleteApi(userId, apiId) {
   await ensureTables();
   await db.run('DELETE FROM renter_do_api WHERE user_id = ? AND id = ?', [Number(userId), Number(apiId)]);
+  // Instance yang memakai API ini tidak bisa dikelola lagi -> keluarkan dari daftar VPS/RDP Saya.
+  try { await db.run('UPDATE renter_instances SET status = 0 WHERE user_id = ? AND api_id = ?', [Number(userId), Number(apiId)]); } catch (_) {}
 }
 
 async function disableApi(userId, apiId) {

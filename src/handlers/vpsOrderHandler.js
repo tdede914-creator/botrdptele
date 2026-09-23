@@ -706,13 +706,21 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] }
     });
 
-    let tokenInfo = await resolveTokenForInstance(vps, true);
-    if (!tokenInfo.token) throw new Error('API DigitalOcean pembuatan awal tidak ditemukan dan tidak ada API fallback yang tersedia.');
+    // REBUILD SELALU PROVIDER YANG SAMA: hanya pakai API asal instance (tanpa fallback
+    // ke provider lain). Kalau API asal hilang/nonaktif, rebuild dibatalkan dgn pesan jelas.
+    const tokenInfo = await resolveTokenForInstance(vps, false);
+    if (!tokenInfo.token) throw new Error('API provider asal server ini tidak ditemukan / nonaktif. Rebuild harus memakai provider yang sama — aktifkan kembali API tersebut lalu coba lagi.');
+
+    const dcApi = require('../utils/doApi');
+    const baseUbuntuForToken = (token) => dcApi.isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (dcApi.isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
 
     async function createWith(info) {
       const token = info.token;
-      const createSize = (require('../utils/doApi').isAwsToken(token) && String(image || '').startsWith('aws:') && String(vps.image || '').startsWith('rdp:')) ? normalizeAwsRdpSize(size) : size;
-      const created = await createDroplet(token, `${namePrefix}-${crypto.randomBytes(4).toString('hex')}`, region, createSize, image, cloudInit);
+      // RDP dibangun dari Ubuntu sesuai provider token (fix: dulu hardcode image DO
+      // -> gagal saat provider asal Linode/AWS/UpCloud). VPS pakai image yang diminta.
+      const createImage = (namePrefix === 'rdp') ? baseUbuntuForToken(token) : image;
+      const createSize = (dcApi.isAwsToken(token) && namePrefix === 'rdp') ? normalizeAwsRdpSize(size) : size;
+      const created = await createDroplet(token, `${namePrefix}-${crypto.randomBytes(4).toString('hex')}`, region, createSize, createImage, cloudInit);
       if (!created || !created.dropletId) return { ok: false, error: created?.error || 'Gagal membuat droplet baru.', info };
       const ip = await waitPublicIp(token, created.dropletId, 30, 5000, region);
       if (!ip) {
@@ -731,33 +739,11 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       };
     }
 
-    let made = await createWith(tokenInfo);
-    // Jika API asal order gagal/error/hilang limit, baru fallback ke API lain yang stoknya cocok.
-    if (!made.ok && tokenInfo.fromOriginal) {
-      const fallbackInfo = await resolveTokenForInstance(vps, true, tokenInfo.apiId);
-      if (fallbackInfo.token && Number(fallbackInfo.apiId) !== Number(tokenInfo.apiId)) {
-        const fbMade = await createWith(fallbackInfo);
-        if (fbMade.ok) made = fbMade;
-      }
-    }
+    const made = await createWith(tokenInfo);
     if (!made.ok) throw new Error(made.error || 'Gagal membuat droplet baru.');
 
-    tokenInfo = made.info;
     const dropletId = made.dropletId;
     const ip = made.ip;
-
-    if (!tokenInfo.fromOriginal && tokenInfo.productId) {
-      try {
-        await vpsManager.decrementProductSlotDuration(tokenInfo.productId, Number(vps.duration_days) || 30);
-        if (vps.product_id && Number(vps.product_id) !== Number(tokenInfo.productId)) {
-          await vpsManager.incrementProductSlotDuration(vps.product_id, Number(vps.duration_days) || 30);
-        }
-        await vpsManager.updateVpsInstanceApiProduct(vpsId, tokenInfo.apiId, tokenInfo.productId);
-      } catch (e) {
-        try { await deleteDroplet(tokenInfo.token, dropletId); } catch (_) {}
-        throw e;
-      }
-    }
 
     // Update DB to new droplet (store password for user). Expired date tidak diubah: tetap ikut order awal.
     await vpsManager.updateVpsInstanceDroplet(vpsId, dropletId, ip, region, image, newPass);
