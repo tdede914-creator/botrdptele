@@ -706,18 +706,26 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] }
     });
 
-    // REBUILD SELALU PROVIDER YANG SAMA: hanya pakai API asal instance (tanpa fallback
-    // ke provider lain). Kalau API asal hilang/nonaktif, rebuild dibatalkan dgn pesan jelas.
-    const tokenInfo = await resolveTokenForInstance(vps, false);
-    if (!tokenInfo.token) throw new Error('API provider asal server ini tidak ditemukan / nonaktif. Rebuild harus memakai provider yang sama — aktifkan kembali API tersebut lalu coba lagi.');
-
+    // REBUILD: utamakan API asal. Boleh fallback ke API LAIN asalkan PROVIDER SAMA
+    // (mis. DO api#1 mati -> pakai DO api#2). TIDAK PERNAH pindah provider (image/region beda).
     const dcApi = require('../utils/doApi');
     const baseUbuntuForToken = (token) => dcApi.isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (dcApi.isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
+    const providerFromInstance = () => {
+      const img = String(vps.image || '').toLowerCase();
+      if (img.startsWith('aws:')) return 'AWS';
+      if (img.startsWith('linode/')) return 'Linode';
+      if (img.startsWith('upcloud/')) return 'UpCloud';
+      if (img.startsWith('rdp:')) return Number(vps.rdp_port) === 8443 ? 'UpCloud' : null; // DO/AWS/Linode sama2 4443 -> ambigu
+      return 'DigitalOcean';
+    };
+
+    const originalInfo = await resolveTokenForInstance(vps, false);
+    const originalProvider = originalInfo.token ? dcApi.providerName(originalInfo.token) : providerFromInstance();
 
     async function createWith(info) {
       const token = info.token;
       // RDP dibangun dari Ubuntu sesuai provider token (fix: dulu hardcode image DO
-      // -> gagal saat provider asal Linode/AWS/UpCloud). VPS pakai image yang diminta.
+      // -> gagal saat provider Linode/AWS/UpCloud). VPS pakai image yang diminta.
       const createImage = (namePrefix === 'rdp') ? baseUbuntuForToken(token) : image;
       const createSize = (dcApi.isAwsToken(token) && namePrefix === 'rdp') ? normalizeAwsRdpSize(size) : size;
       const created = await createDroplet(token, `${namePrefix}-${crypto.randomBytes(4).toString('hex')}`, region, createSize, createImage, cloudInit);
@@ -727,23 +735,48 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
         try { await deleteDroplet(token, created.dropletId, region); } catch (_) {}
         return { ok: false, error: 'IP droplet baru belum tersedia.', info };
       }
-      // Linode tidak boleh dipaksa Direct Disk sebelum installer RDP berjalan,
-      // karena tahap awal butuh GRUB untuk boot Alpine installer. Direct Disk diset tertunda saat instalasi dimulai.
       return {
-        ok: true,
-        ip,
-        dropletId: created.dropletId,
-        info,
+        ok: true, ip, dropletId: created.dropletId, info,
         sshPrivateKey: created.sshPrivateKey || null,
         sshUsername: created.sshUsername || null,
       };
     }
 
-    const made = await createWith(tokenInfo);
-    if (!made.ok) throw new Error(made.error || 'Gagal membuat droplet baru.');
+    // 1) Coba API asal dulu.
+    let made = null; let usedInfo = null;
+    if (originalInfo.token) { const r = await createWith(originalInfo); if (r.ok) { made = r; usedInfo = originalInfo; } }
+    // 2) Fallback: API LAIN dengan PROVIDER SAMA yang masih ada stok speknya.
+    if (!made && originalProvider) {
+      let cands = [];
+      try { cands = await vpsManager.listFallbackProductsForInstance(vps, originalInfo.apiId || null); } catch (_) { cands = []; }
+      for (const c of cands) {
+        if (!c.api_token || dcApi.providerName(c.api_token) !== originalProvider) continue;
+        const r = await createWith({ token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false });
+        if (r.ok) { made = r; usedInfo = { token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false }; break; }
+      }
+    }
+    if (!made) {
+      if (!originalInfo.token && !originalProvider) throw new Error('API provider asal tidak ditemukan & provider tidak bisa ditentukan. Aktifkan kembali API-nya lalu coba lagi.');
+      throw new Error('Rebuild gagal: semua API dengan provider yang sama tidak bisa membuat server (cek saldo/limit akun cloud).');
+    }
 
+    const tokenInfo = usedInfo;
     const dropletId = made.dropletId;
     const ip = made.ip;
+
+    // Kalau memakai API/produk fallback (beda dari asal), rebalance stok & update instance.
+    if (!tokenInfo.fromOriginal && tokenInfo.productId) {
+      try {
+        await vpsManager.decrementProductSlotDuration(tokenInfo.productId, Number(vps.duration_days) || 30);
+        if (vps.product_id && Number(vps.product_id) !== Number(tokenInfo.productId)) {
+          await vpsManager.incrementProductSlotDuration(vps.product_id, Number(vps.duration_days) || 30);
+        }
+        await vpsManager.updateVpsInstanceApiProduct(vpsId, tokenInfo.apiId, tokenInfo.productId);
+      } catch (e) {
+        try { await deleteDroplet(tokenInfo.token, dropletId); } catch (_) {}
+        throw e;
+      }
+    }
 
     // Update DB to new droplet (store password for user). Expired date tidak diubah: tetap ikut order awal.
     await vpsManager.updateVpsInstanceDroplet(vpsId, dropletId, ip, region, image, newPass);

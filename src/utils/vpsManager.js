@@ -738,6 +738,38 @@ async function getFallbackProductForInstancePrefer(vps, excludeApiId = null) {
   );
 }
 
+// Daftar SEMUA produk (di API lain) dengan spek sama & masih ada stok, untuk kandidat
+// rebuild-fallback. Menyertakan token API tiap kandidat agar pemanggil bisa memfilter
+// berdasarkan PROVIDER (rebuild hanya boleh pindah ke API provider yang sama).
+async function listFallbackProductsForInstance(vps, excludeApiId = null) {
+  if (!vps) return [];
+  const productType = vps.product_type || (String(vps.image || '').startsWith('rdp:') ? 'rdp' : 'vps');
+  const ram = Number(vps.ram || 0);
+  const core = Number(vps.core || 0);
+  const d = Number(vps.duration_days || 30);
+  if (!ram || !core) return [];
+  const priceCol = (d === 1) ? 'price_daily' : (d === 7 ? 'price_weekly' : 'price');
+  const slotCol = (d === 1) ? 'slot_daily' : (d === 7 ? 'slot_weekly' : 'slot_monthly');
+  const tf = _productTypeFilter(productType);
+  const params = [...tf.params, ram, core];
+  let notApi = '';
+  if (excludeApiId) { notApi = ' AND p.api_id != ? '; params.push(Number(excludeApiId)); }
+  return await db.all(
+    `SELECT p.id, p.api_id, p.size_slug, p.product_type, a.token AS api_token
+     FROM vps_products p
+     JOIN do_api a ON a.id = p.api_id AND a.status = 1
+     WHERE p.status = 1
+       AND COALESCE(p.${slotCol},0) > 0
+       AND ${tf.sql}
+       AND p.ram = ?
+       AND p.core = ?
+       AND p.${priceCol} IS NOT NULL
+       ${notApi}
+     ORDER BY p.id ASC`,
+    params
+  );
+}
+
 // Update price for all APIs with same spec (ram/core) and consolidate duplicates after update.
 // For VPS/RDP family (vps/rdp/combo), the same price applies to all family rows sharing
 // the same (ram, core) so the shared-stock UX works transparently.
@@ -878,5 +910,6 @@ module.exports = {
   updateVpsInstanceApiProduct,
   getProductAny,
   getFallbackProductForInstancePrefer,
+  listFallbackProductsForInstance,
   getAdminPowerTarget,
 };

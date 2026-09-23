@@ -164,16 +164,52 @@ async function recreateDroplet(inst, serviceType, { namePrefix, region, size }) 
     return { ok: true, ip, dropletId: created.dropletId, info, image: baseImage, sshPrivateKey: created.sshPrivateKey || null, sshUsername: created.sshUsername || null };
   };
 
-  // REBUILD SELALU PROVIDER YANG SAMA: hanya API asal instance, tanpa fallback ke provider lain.
-  const tokenInfo = await resolveToken(inst, false);
-  if (!tokenInfo.token) throw new Error('API provider asal server ini tidak ditemukan / nonaktif. Rebuild harus memakai provider yang sama — aktifkan kembali API tersebut lalu coba lagi.');
+  // REBUILD: utamakan API asal; boleh fallback ke API LAIN asalkan PROVIDER SAMA
+  // (mis. DO api#1 mati -> pakai DO api#2). TIDAK PERNAH pindah beda provider.
+  const providerFromInstance = () => {
+    const img = String(inst.image || '').toLowerCase();
+    if (img.startsWith('aws:')) return 'aws';
+    if (img.startsWith('linode/')) return 'linode';
+    if (img.startsWith('upcloud/')) return 'upcloud';
+    if (img.startsWith('rdp:')) return Number(inst.rdp_port) === 8443 ? 'upcloud' : null; // DO/AWS/Linode sama2 4443 -> ambigu
+    return 'digitalocean';
+  };
+  const originalInfo = await resolveToken(inst, false);
+  const originalProvider = originalInfo.token ? providerOf(originalInfo.token) : providerFromInstance();
 
-  const made = await createWith(tokenInfo);
-  if (!made.ok) throw new Error(made.error || 'Gagal membuat droplet baru.');
+  let made = null; let usedInfo = null;
+  if (originalInfo.token) { const r = await createWith(originalInfo); if (r.ok) { made = r; usedInfo = originalInfo; } }
+  if (!made && originalProvider) {
+    let cands = [];
+    try { cands = await vpsManager.listFallbackProductsForInstance(inst, originalInfo.apiId || null); } catch (_) { cands = []; }
+    for (const c of cands) {
+      if (!c.api_token || providerOf(c.api_token) !== originalProvider) continue;
+      const r = await createWith({ token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false });
+      if (r.ok) { made = r; usedInfo = { token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false }; break; }
+    }
+  }
+  if (!made) throw new Error((originalInfo.token || originalProvider)
+    ? 'Rebuild gagal: semua API dengan provider yang sama tidak bisa membuat server (cek saldo/limit akun cloud).'
+    : 'API provider asal tidak ditemukan / nonaktif. Aktifkan kembali API-nya lalu coba lagi.');
 
+  const tokenInfo = usedInfo;
   const dropletId = made.dropletId;
   const ip = made.ip;
   const usedImage = made.image || ubuntuImageForToken(tokenInfo.token);
+
+  // Rebalance stok bila memakai API/produk fallback (beda dari asal).
+  if (!tokenInfo.fromOriginal && tokenInfo.productId) {
+    try {
+      await vpsManager.decrementProductSlotDuration(tokenInfo.productId, Number(inst.duration_days) || 30);
+      if (inst.product_id && Number(inst.product_id) !== Number(tokenInfo.productId)) {
+        await vpsManager.incrementProductSlotDuration(inst.product_id, Number(inst.duration_days) || 30);
+      }
+      await vpsManager.updateVpsInstanceApiProduct(inst.id, tokenInfo.apiId, tokenInfo.productId);
+    } catch (e) {
+      try { await deleteDroplet(tokenInfo.token, dropletId, region); } catch (_) {}
+      throw e;
+    }
+  }
 
   // Update baris yang SAMA. Expired date TIDAK diubah (updateVpsInstanceDroplet tidak menyentuh expires_at/duration_days).
   await vpsManager.updateVpsInstanceDroplet(inst.id, dropletId, ip, region, usedImage, newPass);
