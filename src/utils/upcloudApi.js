@@ -1259,47 +1259,65 @@ async function upcloudPower(token, uuid, action) {
 // Delete server
 // ============================================================================
 /**
- * UpCloud tidak mengizinkan DELETE server yang state=started. Kita stop dulu
- * (hard stop untuk cepat), tunggu sampai stopped, baru DELETE dengan
- * ?storages=1&backups=delete supaya disk & backup ikut dibersihkan.
+ * Hapus server UpCloud BENAR-BENAR (server + storage), bukan cuma stop.
+ * UpCloud menolak DELETE server yang state != stopped, jadi:
+ *   1) stop (hard) lalu tunggu sampai state=stopped,
+ *   2) DELETE ?storages=1 dengan beberapa kali percobaan (tahan 429/5xx & state ilegal),
+ *   3) verifikasi server benar-benar hilang (GET -> 404).
+ * Sebelumnya delete kadang gagal senyap (param backups=delete ditolak / 429 /
+ * server belum stopped) sehingga server cuma ke-stop & menumpuk. Ini memperbaikinya.
  */
 async function upcloudDeleteServer(token, uuid) {
-  // 1. Stop kalau sedang running
+  const headers = upcloudHeaders(token);
+  const stopServer = async () => {
+    try {
+      await axios.post(
+        `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}/stop`,
+        { stop_server: { stop_type: 'hard', timeout: '30' } },
+        { headers, timeout: 30000 },
+      );
+    } catch (_) { /* ignore */ }
+  };
+
+  // 1) Stop kalau belum stopped, lalu tunggu sampai stopped (maks ~90 detik).
   try {
     const server = await upcloudGetServer(token, uuid);
     const state = String((server && server.state) || '').toLowerCase();
-    if (state === 'started' || state === 'running' || state === 'maintenance') {
-      try {
-        await axios.post(
-          `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}/stop`,
-          { stop_server: { stop_type: 'hard', timeout: '10' } },
-          { headers: upcloudHeaders(token), timeout: 30000 },
-        );
-      } catch (_) { /* ignore */ }
-
-      // Wait until stopped (max ~60 detik)
-      for (let i = 0; i < 20; i++) {
+    if (state && state !== 'stopped') {
+      await stopServer();
+      for (let i = 0; i < 30; i++) {
         await _sleep(3000);
         const s2 = await upcloudGetServer(token, uuid).catch(() => null);
-        const s2state = String((s2 && s2.state) || '').toLowerCase();
-        if (!s2 || s2state === 'stopped') break;
+        if (!s2) return { success: true }; // sudah hilang
+        if (String(s2.state || '').toLowerCase() === 'stopped') break;
       }
     }
-  } catch (_) { /* ignore, delete tetap dicoba */ }
+  } catch (_) { /* server mungkin sudah tidak ada; tetap coba delete */ }
 
-  // 2. Delete server + storage + backup
-  try {
-    await axios.delete(
-      `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1&backups=delete`,
-      {
-        headers: upcloudHeaders(token),
-        timeout: 60000,
-      },
-    );
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: _extractError(err) };
+  // 2) DELETE server + storage, dengan retry. Coba pakai backups=delete dulu; kalau
+  //    ditolak, fallback ke storages=1 saja. Kalau state masih ilegal -> stop lagi.
+  const urlWithBackups = `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1&backups=delete`;
+  const urlStoragesOnly = `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1`;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const url = attempt === 0 ? urlWithBackups : urlStoragesOnly;
+    try {
+      await axios.delete(url, { headers, timeout: 60000 });
+      // Verifikasi benar-benar terhapus.
+      const check = await upcloudGetServer(token, uuid).catch(() => null);
+      if (!check) return { success: true };
+      lastErr = new Error('server masih ada setelah DELETE');
+    } catch (err) {
+      const status = err && err.response && err.response.status;
+      if (status === 404) return { success: true }; // sudah terhapus
+      lastErr = err;
+      // 409/400 biasanya "server belum stopped" -> stop lagi sebelum retry.
+      if (status === 409 || status === 400) await stopServer();
+    }
+    await _sleep(4000);
   }
+  console.error(`[upcloud] GAGAL hapus server ${uuid}:`, _extractError(lastErr));
+  return { success: false, error: lastErr ? _extractError(lastErr) : 'delete gagal' };
 }
 
 // ============================================================================
