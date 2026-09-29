@@ -21,7 +21,7 @@
  * Behavior spesifik yang bot butuhkan:
  * - Base OS = Ubuntu 22.04 dari public template (auto-discovery UUID)
  * - Auto-root via cloud-init user_data (kompatibel dgn rootCloudInit dari handler)
- * - Disk auto-size by RAM (RAM 8GB -> 160GB, RAM 16GB -> 300GB, dst)
+ * - Disk auto-size by RAM (RAM <=8GB -> 150GB, 9-15GB -> 200GB, >=16GB -> 230GB)
  * - Firewall = "on" + accept-all rules (IPv4 + IPv6, direction=in, protocol=empty=any)
  *   Fallback: kalau add rule gagal, PUT firewall=off supaya SSH tetap work
  */
@@ -138,28 +138,18 @@ function upcloudHeaders(token) {
 // ============================================================================
 // Disk auto-size by RAM
 // ============================================================================
-// Berdasarkan patokan user: RAM 8GB -> 160GB, RAM 16GB -> 300GB.
+// Berdasarkan patokan user: RAM <=8GB -> 150GB, RAM >=16GB -> 230GB.
 // Step function biar predictable dan bot tidak error karena disk terlalu kecil
 // (Windows Server butuh minimal ~40GB, plus growth).
 function pickDiskGb(memoryMb) {
   const ramGb = Math.round(Number(memoryMb || 0) / 1024);
   // Patokan user:
-  //   RAM 8GB  -> 250GB
-  //   RAM 16GB -> 350GB
-  //   RAM 24GB -> 450GB
-  // Skala di atas & bawah menyesuaikan supaya tidak error karena disk kurang
-  // (Windows Server butuh minimal ~40GB) tapi juga tidak boros untuk RAM kecil.
-  if (ramGb <= 1)   return 50;
-  if (ramGb <= 2)   return 100;
-  if (ramGb <= 4)   return 150;
-  if (ramGb <= 8)   return 250;   // <-- patokan user
-  if (ramGb <= 12)  return 300;
-  if (ramGb <= 16)  return 350;   // <-- patokan user
-  if (ramGb <= 24)  return 450;   // <-- patokan user
-  if (ramGb <= 32)  return 600;
-  if (ramGb <= 64)  return 1000;
-  if (ramGb <= 128) return 1600;
-  return Math.max(1600, ramGb * 15);
+  //   RAM 8GB ke bawah  -> 150GB
+  //   RAM 16GB ke atas  -> 230GB
+  //   9-15GB (di antara) -> 200GB
+  if (ramGb <= 8)  return 150;
+  if (ramGb < 16)  return 200;
+  return 230;
 }
 
 // ============================================================================
@@ -291,6 +281,38 @@ function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// UpCloud membatasi rate API (HTTP 429 ERROR_RATE_LIMITED). GET yang sering dipanggil
+// (zone/plan/status) di-retry otomatis dengan exponential backoff + menghormati header
+// Retry-After, supaya create RDP/VPS tidak gagal hanya karena rate limit sesaat.
+async function _getWithRetry(url, config, opts = {}) {
+  const retries = opts.retries != null ? opts.retries : 4;
+  const baseMs = opts.baseMs || 1000;
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await axios.get(url, config);
+    } catch (err) {
+      lastErr = err;
+      const status = err && err.response && err.response.status;
+      const retryable = status === 429 || (status >= 500 && status < 600);
+      if (!retryable || i === retries) throw err;
+      const raHdr = err.response && err.response.headers && err.response.headers['retry-after'];
+      const ra = Number(raHdr);
+      const wait = (Number.isFinite(ra) && ra > 0)
+        ? Math.min(30000, ra * 1000)
+        : Math.min(15000, baseMs * Math.pow(2, i)) + Math.floor(Math.random() * 500);
+      console.warn(`[upcloud] HTTP ${status} pada ${url} — retry ${i + 1}/${retries} dalam ${wait}ms`);
+      await _sleep(wait);
+    }
+  }
+  throw lastErr;
+}
+
+// Cache ringan untuk data statis (zone) — dipanggil pada setiap order-options & create,
+// jadi caching menekan jumlah request => mengurangi peluang kena rate limit.
+const _zoneCache = new Map(); // token -> { data, ts }
+const _ZONE_TTL_MS = 10 * 60 * 1000;
+
 function _sanitizeHostname(name) {
   // Hostname RFC-compliant: alphanumeric + dash, max 63 char, no leading/trailing dash
   return (
@@ -393,13 +415,15 @@ async function upcloudServersCount(token) {
 // Zones
 // ============================================================================
 async function upcloudGetZones(token) {
-  const res = await axios.get(`${UPCLOUD_API}/zone`, {
+  const cached = _zoneCache.get(token);
+  if (cached && (Date.now() - cached.ts) < _ZONE_TTL_MS) return cached.data;
+  const res = await _getWithRetry(`${UPCLOUD_API}/zone`, {
     headers: upcloudHeaders(token),
     timeout: 30000,
   });
   const zones = (res.data && res.data.zones && res.data.zones.zone) || [];
   // Filter zone "public": "no" (private cloud zones) supaya user tidak salah pilih
-  return zones
+  const out = zones
     .filter((z) => String(z.public || 'yes').toLowerCase() !== 'no')
     .map((z) => ({
       slug: z.id,
@@ -408,6 +432,8 @@ async function upcloudGetZones(token) {
       available: true,
       provider: 'upcloud',
     }));
+  _zoneCache.set(token, { data: out, ts: Date.now() });
+  return out;
 }
 
 // ============================================================================
@@ -467,7 +493,7 @@ const _COMMON_RAM_GB = new Set([1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128])
 async function upcloudGetPlans(token) {
   let plans = [];
   try {
-    const planRes = await axios.get(`${UPCLOUD_API}/plan`, {
+    const planRes = await _getWithRetry(`${UPCLOUD_API}/plan`, {
       headers: upcloudHeaders(token),
       timeout: 30000,
     });
@@ -1154,7 +1180,7 @@ async function upcloudCreateServer(token, name, zone, sizeSlug, _imageSlug, user
 // Get server + wait for public IP
 // ============================================================================
 async function upcloudGetServer(token, uuid) {
-  const res = await axios.get(`${UPCLOUD_API}/server/${encodeURIComponent(uuid)}`, {
+  const res = await _getWithRetry(`${UPCLOUD_API}/server/${encodeURIComponent(uuid)}`, {
     headers: upcloudHeaders(token),
     timeout: 30000,
   });
