@@ -129,7 +129,10 @@ async function status(transactionId) {
   if (!co) return { status: 'not_found' };
   if (co.jobId) return { status: 'paid', jobId: co.jobId };
   let sr;
-  try { sr = await checkPaymentStatus(process.env.DOMPETX_API_KEY, transactionId); } catch (_) { return { status: co.status || 'awaiting_payment' }; }
+  // PENTING: kirim co.amount. Gateway Pakasir memverifikasi status pakai amount+order_id;
+  // tanpa amount, cek status selalu gagal -> pembayaran tak pernah terkonfirmasi -> provisioning
+  // tak jalan padahal stok sudah ter-reserve. (Deposit tidak kena karena simpan pending_payments.)
+  try { sr = await checkPaymentStatus(process.env.DOMPETX_API_KEY, transactionId, co.amount); } catch (_) { return { status: co.status || 'awaiting_payment' }; }
   if (sr && sr.success && sr.data && SUCCESS_STATUSES.includes(String(sr.data.status || '').toLowerCase())) {
     const jobId = await finalize(co);
     if (jobId) return { status: 'paid', jobId };
