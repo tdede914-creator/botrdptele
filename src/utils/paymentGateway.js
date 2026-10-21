@@ -54,50 +54,46 @@ async function createPakasirPayment(reffId, amount) {
   if (!slug) return { success: false, error: 'PAKASIR_SLUG belum diisi di .env' };
   if (!apiKey) return { success: false, error: 'PAKASIR_API_KEY belum diisi di .env' };
 
-  const payload = {
-    project: slug,
-    order_id: reffId,
-    amount: Number(amount),
-    api_key: apiKey
-  };
-
   try {
-    const res = await axios.post(`${PAKASIR_BASE_URL}/api/transactioncreate/${encodeURIComponent(method)}`, payload, {
-      headers: { 'Content-Type': 'application/json' },
+    // Pakasir API v2: POST /api/v2/create-transaction/{slug}/{order_id}
+    // Header X-Api-Key, body { method, amount }. (v1 /api/transactioncreate sudah 404.)
+    const url = `${PAKASIR_BASE_URL}/api/v2/create-transaction/${encodeURIComponent(slug)}/${encodeURIComponent(reffId)}`;
+    const res = await axios.post(url, { method, amount: Number(amount) }, {
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
       timeout: 30000
     });
 
-    const payment = res.data?.payment || res.data?.transaction || res.data?.data || res.data || {};
-    const orderId = payment.order_id || payment.reference || reffId;
-    const total = Number(payment.amount || amount);
-
-    const paymentUrl =
-      payment.payment_url ||
-      payment.paymentUrl ||
-      payment.checkout_url ||
-      `${PAKASIR_BASE_URL}/pay/${encodeURIComponent(slug)}/${total}?order_id=${encodeURIComponent(orderId)}${method === 'qris' ? '&qris_only=1' : ''}`;
+    const d = res.data || {};
+    const txnId = d.txn_id || d.txnId || reffId;   // dipakai untuk cek status & cancel
+    const orderId = d.order_id || reffId;
+    const total = Number(d.total_payment || d.amount || amount);
+    // method=payment_link -> balas { txn_id, payment_link }. Selain itu pakai qr_string
+    // + bangun URL pembayaran v2 (pay-v2/{txn_id}).
+    const paymentUrl = d.payment_link
+      || `${PAKASIR_BASE_URL}/pay-v2/${encodeURIComponent(txnId)}${method === 'qris' ? '?qris_only=1' : ''}`;
 
     return {
       success: true,
       data: {
-        id: orderId,
+        id: txnId,
         reff_id: orderId,
         nominal: total,
-        fee: Number(payment.fee || 0),
+        fee: Number(d.fee || 0),
         tambahan: 0,
-        get_balance: Number(payment.amount || amount),
-        qr_string: payment.payment_number || payment.qr_string || payment.qris_string || payment.qr_payload || payment.qrCode || payment.qr_code || null,
-        qr_image: payment.qr_image || payment.qr_url || payment.qris_url || null,
+        get_balance: Number(d.amount || amount),
+        qr_string: d.qr_string || null,
+        qr_image: null,
         payment_url: paymentUrl,
-        status: payment.status || 'pending',
-        created_at: payment.created_at || new Date().toISOString(),
-        expired_at: payment.expired_at || null,
+        va_number: d.va_number || null,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        expired_at: d.expired_at || null,
         payment_gateway: 'pakasir',
-        raw: res.data
+        raw: d
       }
     };
   } catch (error) {
-    console.error('Pakasir create payment error:', error?.response?.data || error.message);
+    console.error('Pakasir create payment error (v2):', error?.response?.data || error.message);
     return { success: false, error: extractError(error) };
   }
 }
@@ -109,39 +105,36 @@ async function checkPakasirStatus(transactionId, amount = null) {
   if (!apiKey) return { success: false, error: 'PAKASIR_API_KEY belum diisi di .env' };
   if (!transactionId) return { success: false, error: 'transactionId kosong' };
 
-  const trxAmount = Number(amount || await findAmountForTransaction(transactionId));
-  if (!trxAmount) return { success: false, error: 'Amount transaksi Pakasir tidak ditemukan' };
-
   try {
-    const url =
-      `${PAKASIR_BASE_URL}/api/transactiondetail` +
-      `?project=${encodeURIComponent(slug)}` +
-      `&amount=${encodeURIComponent(trxAmount)}` +
-      `&order_id=${encodeURIComponent(transactionId)}` +
-      `&api_key=${encodeURIComponent(apiKey)}`;
+    // Pakasir API v2: GET /api/v2/transaction-status/{slug}/{txn_id}, header X-Api-Key.
+    // (v2 tidak butuh amount lagi — cukup txn_id. Status: pending|completed|canceled.)
+    const url = `${PAKASIR_BASE_URL}/api/v2/transaction-status/${encodeURIComponent(slug)}/${encodeURIComponent(transactionId)}`;
+    const res = await axios.get(url, {
+      headers: { 'X-Api-Key': apiKey },
+      timeout: 15000
+    });
 
-    const res = await axios.get(url, { timeout: 15000 });
-    const trx = res.data?.transaction || res.data?.payment || res.data?.data || res.data || {};
-
+    const trx = res.data || {};
+    const amt = Number(trx.amount || amount || 0);
     return {
       success: true,
       data: {
-        id: trx.order_id || transactionId,
+        id: trx.txn_id || transactionId,
         reference: trx.order_id || transactionId,
-        status: trx.status || 'unknown',
-        amount: Number(trx.amount || trxAmount),
-        fee: Number(trx.fee || 0),
-        get_balance: Number(trx.amount || trxAmount),
-        qr_image: trx.qr_image || trx.qr_url || null,
-        qr_string: trx.payment_number || trx.qr_string || trx.qris_string || null,
-        paid_at: trx.completed_at || trx.paid_at || trx.updated_at || null,
-        expired_at: trx.expired_at || null,
+        status: trx.status || 'unknown',   // completed = sukses
+        amount: amt,
+        fee: 0,
+        get_balance: amt,
+        qr_image: null,
+        qr_string: null,
+        paid_at: trx.completed_at || null,
+        expired_at: null,
         payment_gateway: 'pakasir',
-        raw: res.data
+        raw: trx
       }
     };
   } catch (error) {
-    console.error('Pakasir status error:', error?.response?.data || error.message);
+    console.error('Pakasir status error (v2):', error?.response?.data || error.message);
     return { success: false, error: extractError(error) };
   }
 }
