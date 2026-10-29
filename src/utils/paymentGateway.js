@@ -308,7 +308,14 @@ async function createTokopayPayment(reffId, amount) {
     });
     const root = res.data || {};
     const d = root.data || {};
-    if (!d.trx_id) return { success: false, error: root.message || root.status || 'TokoPay order gagal.' };
+    // Sukses TokoPay: status === 1 (angka) ATAU ada trx_id. Kalau gagal, tampilkan
+    // pesan asli TokoPay (error_msg/message/status) biar ketahuan alasannya.
+    if (!d.trx_id) {
+      const msg = root.error_msg || root.message || (d && d.message)
+        || (root.status !== undefined && String(root.status) !== '1' ? ('status=' + root.status) : null)
+        || JSON.stringify(root).slice(0, 300);
+      return { success: false, error: 'TokoPay: ' + msg };
+    }
     const total = Number(d.total_bayar || amount);
     const net = Number(d.total_diterima || total);
     return {
