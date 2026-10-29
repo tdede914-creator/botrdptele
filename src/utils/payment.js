@@ -224,6 +224,9 @@ async function createPayment(apiKey, reffId, amount) {
   if (gateway === 'valqenix') {
     return require('./paymentGateway').createValqenixPayment(reffId, amount);
   }
+  if (gateway === 'tokopay') {
+    return require('./paymentGateway').createTokopayPayment(reffId, amount);
+  }
   return createDompetXPayment(apiKey, reffId, amount);
 }
 
@@ -238,6 +241,9 @@ async function checkPaymentStatus(apiKeyOrTransactionId, maybeTransactionId, may
   }
   if (gateway === 'valqenix') {
     return require('./paymentGateway').checkValqenixStatus(transactionId, maybeAmount);
+  }
+  if (gateway === 'tokopay') {
+    return require('./paymentGateway').checkTokopayStatus(transactionId);
   }
   return checkDompetXStatus(apiKeyOrTransactionId, maybeTransactionId);
 }

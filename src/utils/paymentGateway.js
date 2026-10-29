@@ -9,6 +9,7 @@ function getActiveGateway() {
   if (raw === 'pakasir') return 'pakasir';
   if (raw === 'orderkuota') return 'orderkuota';
   if (raw === 'valqenix') return 'valqenix';
+  if (raw === 'tokopay') return 'tokopay';
   return 'dompetx';
 }
 
@@ -278,6 +279,101 @@ function verifyValqenixWebhook(rawBody, signatureHeader, timestamp, secret) {
   } catch (_) { return false; }
 }
 
+// ============================================================
+// TOKOPAY — QRIS (Simple Order API v1, https://api.tokopay.id/v1)
+// Order & cek-status pakai merchant_id + secret langsung di query (tanpa signature).
+// Signature (MD5) hanya untuk balance & tarik-saldo (tidak dipakai untuk bayar).
+// ============================================================
+const TOKOPAY_BASE_URL = (process.env.TOKOPAY_BASE_URL || 'https://api.tokopay.id/v1').replace(/\/$/, '');
+
+function getTokopayConfig() {
+  return {
+    merchantId: (process.env.TOKOPAY_MERCHANT_ID || process.env.TOKOPAY_MERCHANT || '').trim(),
+    secret: (process.env.TOKOPAY_SECRET || '').trim(),
+    method: (process.env.TOKOPAY_METHOD || 'QRIS').trim() || 'QRIS',
+    baseUrl: TOKOPAY_BASE_URL
+  };
+}
+
+// Create order: GET /v1/order?merchant=&secret=&ref_id=&nominal=&metode=
+// Response (QRIS): { data: { pay_url, qr_link, qr_string, total_bayar, total_diterima, trx_id }, status: 'Success' }
+async function createTokopayPayment(reffId, amount) {
+  const cfg = getTokopayConfig();
+  if (!cfg.merchantId) return { success: false, error: 'TOKOPAY_MERCHANT_ID belum diisi di .env' };
+  if (!cfg.secret) return { success: false, error: 'TOKOPAY_SECRET belum diisi di .env' };
+  try {
+    const res = await axios.get(`${cfg.baseUrl}/order`, {
+      params: { merchant: cfg.merchantId, secret: cfg.secret, ref_id: reffId, nominal: Number(amount), metode: cfg.method },
+      timeout: 30000
+    });
+    const root = res.data || {};
+    const d = root.data || {};
+    if (!d.trx_id) return { success: false, error: root.message || root.status || 'TokoPay order gagal.' };
+    const total = Number(d.total_bayar || amount);
+    const net = Number(d.total_diterima || total);
+    return {
+      success: true,
+      data: {
+        id: d.trx_id,            // dipakai untuk cek status (check-order)
+        reff_id: reffId,
+        nominal: total,
+        fee: Math.max(0, total - net),
+        tambahan: 0,
+        get_balance: net,
+        qr_string: d.qr_string || null,
+        qr_image: d.qr_link || null,
+        payment_url: d.pay_url || null,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        expired_at: d.expired_at || null,
+        payment_gateway: 'tokopay',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('TokoPay create payment error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+// Cek status: GET /v1/check-order?merchant=&secret=&trx_id=
+// Response: { rc:200, message:'Data Found', data:{ status:'Success'|'Unpaid', nominal, ... } }
+async function checkTokopayStatus(transactionId) {
+  const cfg = getTokopayConfig();
+  if (!cfg.merchantId) return { success: false, error: 'TOKOPAY_MERCHANT_ID belum diisi di .env' };
+  if (!cfg.secret) return { success: false, error: 'TOKOPAY_SECRET belum diisi di .env' };
+  if (!transactionId) return { success: false, error: 'transactionId kosong' };
+  try {
+    const res = await axios.get(`${cfg.baseUrl}/check-order`, {
+      params: { merchant: cfg.merchantId, secret: cfg.secret, trx_id: transactionId },
+      timeout: 15000
+    });
+    const root = res.data || {};
+    const d = root.data || {};
+    const amt = Number(d.nominal || 0);
+    return {
+      success: true,
+      data: {
+        id: d.trx_id || transactionId,
+        reference: d.reff_id || transactionId,
+        status: String(d.status || 'unknown').toLowerCase(), // 'Success' -> 'success' (= lunas)
+        amount: amt,
+        fee: Math.max(0, Number(d.jumlah_bayar || amt) - amt),
+        get_balance: amt,
+        qr_string: null,
+        qr_image: null,
+        paid_at: d.updated_at || null,
+        expired_at: d.expired_at || null,
+        payment_gateway: 'tokopay',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('TokoPay status error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
 module.exports = {
   getActiveGateway,
   getPakasirConfig,
@@ -287,5 +383,8 @@ module.exports = {
   createValqenixPayment,
   checkValqenixStatus,
   cancelValqenixPayment,
-  verifyValqenixWebhook
+  verifyValqenixWebhook,
+  getTokopayConfig,
+  createTokopayPayment,
+  checkTokopayStatus
 };
