@@ -487,7 +487,6 @@ async function checkPaydisiniStatus(transactionId) {
     const root = await paydisiniPost(cfg, {
       key: cfg.apiKey,
       request: 'status',
-      merchant_id: cfg.merchantId || undefined,
       unique_code: uniqueCode,
       signature: md5(cfg.apiKey + uniqueCode + 'StatusTransaction')
     });
@@ -527,7 +526,6 @@ async function cancelPaydisiniPayment(transactionId) {
     const root = await paydisiniPost(cfg, {
       key: cfg.apiKey,
       request: 'cancel',
-      merchant_id: cfg.merchantId || undefined,
       unique_code: uniqueCode,
       signature: md5(cfg.apiKey + uniqueCode + 'CancelTransaction')
     });
