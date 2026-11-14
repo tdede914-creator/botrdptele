@@ -1,5 +1,7 @@
 const { addBalance } = require('../utils/userManager');
 const { getAllUsers } = require('../utils/userManager');
+// Akun website (username otomatis) -> resolusi user_id untuk tambah saldo via bot.
+const webAccountService = require('../../web/services/accountService');
 const { sendAdminNotification } = require('../utils/adminNotifications');
 const axios = require('axios');
 const paymentGateway = require('../utils/paymentGateway');
@@ -8,7 +10,9 @@ const { BUTTONS } = require('../config/buttons');
 
 async function handleAddBalance(bot, chatId, messageId) {
   await bot.editMessageText(
-    'Masukkan ID pengguna dan jumlah saldo yang akan ditambahkan dalam format:\n\n`<user_id> <jumlah>`\n\nContoh: `123456789 50000`',
+    'Masukkan tujuan & jumlah saldo dalam format:\n\n`<user_id / username_web> <jumlah>`\n\n' +
+    'Contoh Telegram ID: `123456789 50000`\n' +
+    'Contoh akun website: `kcs772ef7 50000`',
     {
       chat_id: chatId,
       message_id: messageId,
@@ -21,37 +25,48 @@ async function handleAddBalance(bot, chatId, messageId) {
 }
 
 async function processAddBalance(bot, msg) {
-  const parts = msg.text.split(' ');
+  const parts = String(msg.text || '').trim().split(/\s+/);
   if (parts.length !== 2) {
-    await bot.sendMessage(msg.chat.id, '❌ Format tidak valid. Gunakan format: `<user_id> <jumlah>`', {
+    await bot.sendMessage(msg.chat.id, '❌ Format tidak valid. Gunakan: `<user_id / username_web> <jumlah>`', {
       parse_mode: 'Markdown'
     });
     return;
   }
 
-  const userId = parseInt(parts[0]);
+  const target = parts[0];
   const amount = parseInt(parts[1]);
 
-  if (isNaN(userId) || isNaN(amount) || amount <= 0) {
-    await bot.sendMessage(msg.chat.id, '❌ ID pengguna atau jumlah tidak valid');
+  if (isNaN(amount) || amount <= 0) {
+    await bot.sendMessage(msg.chat.id, '❌ Jumlah saldo tidak valid.');
     return;
+  }
+
+  // Tujuan bisa berupa Telegram ID (angka) ATAU username akun website (mis. kcs772ef7).
+  let userId = null;
+  let label = target;
+  if (/^\d+$/.test(target)) {
+    userId = parseInt(target);
+  } else {
+    try { userId = await webAccountService.getUserIdByUsername(target); } catch (_) { userId = null; }
+    if (!userId) {
+      await bot.sendMessage(msg.chat.id, `❌ Username website "${target}" tidak ditemukan.`);
+      return;
+    }
+    label = `${target} (akun web)`;
   }
 
   try {
     const newBalance = await addBalance(userId, amount);
-    await bot.sendMessage(msg.chat.id, 
+    await bot.sendMessage(msg.chat.id,
       `✅ Berhasil menambahkan saldo:\n\n` +
-      `👤 User ID: 
-${userId}
-` +
-      `💰 Jumlah: Rp ${amount.toLocaleString()}
-` +
-      `💳 Saldo Baru: Rp ${newBalance.toLocaleString()}`,
-      { parse_mode: 'Markdown' }
+      `👤 Tujuan: ${label}\n` +
+      `🆔 User ID: ${userId}\n` +
+      `💰 Jumlah: Rp ${amount.toLocaleString()}\n` +
+      `💳 Saldo Baru: Rp ${newBalance.toLocaleString()}`
     );
   } catch (error) {
     console.error('Error adding balance:', error);
-    await bot.sendMessage(msg.chat.id, '❌ Gagal menambahkan saldo. User ID tidak ditemukan.');
+    await bot.sendMessage(msg.chat.id, '❌ Gagal menambahkan saldo. Pastikan tujuan (User ID / username web) benar.');
   }
 }
 

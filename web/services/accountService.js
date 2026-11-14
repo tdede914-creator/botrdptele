@@ -88,4 +88,16 @@ async function getUsername(userId) {
 
 function isWebAccount(userId) { return Number(userId) >= WEB_ID_BASE; }
 
-module.exports = { register, login, getUsername, isWebAccount, WEB_ID_BASE };
+// Cari user_id (sintetis) dari username akun web. Return number|null.
+// Dipakai bot: admin bisa tambah saldo user website via username.
+async function getUserIdByUsername(username) {
+  try {
+    await ensureTable();
+    const u = String(username || '').trim().toLowerCase();
+    if (!u) return null;
+    const row = await db.get('SELECT user_id FROM web_users WHERE username = ?', [u]);
+    return row && row.user_id ? Number(row.user_id) : null;
+  } catch (_) { return null; }
+}
+
+module.exports = { register, login, getUsername, getUserIdByUsername, isWebAccount, WEB_ID_BASE };

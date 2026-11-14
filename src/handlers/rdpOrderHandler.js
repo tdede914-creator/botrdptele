@@ -429,6 +429,8 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
   });
 
   // Deduct balance only. Slot was already reserved before provisioning started.
+  // CATATAN: Order RDP TIDAK di-refund saat gagal — VPS tetap dibuat & user bisa Rebuild
+  // dari menu "VPS/RDP Saya" (refund hanya untuk jasa Install RDP, bukan order).
   if (!isAdmin(uid)) await deductBalance(uid, totalCost);
 
   // Start install process (background-ish with monitoring)
@@ -437,7 +439,7 @@ async function createRdp(bot, chatId, messageId, productId, regionSlug, osId, du
     `🌐 IP: ${ip}\n` +
     `💿 Windows: ${selectedOS.name}\n` +
     `🔒 Port RDP: ${rdpPort}\n\n` +
-    '⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot).\n' +
+    '⏰ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot).\n' +
     '🔔 Kamu akan dapat notifikasi saat RDP siap.',
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] } }
   );
@@ -585,10 +587,9 @@ await bot.sendMessage(
 		            await notifyOrderTestimonial(bot, { productName: 'RDP' });
 
 } else {
-            // BUGFIX: on monitor timeout, still hand the user their password.
-            // Rebuild is now a last resort — often the RDP just needs a few
-            // more minutes and works fine on a manual connect attempt.
-            // Password was already saved to DB during createVpsInstance() above.
+            // Monitor timeout: JANGAN refund/hapus. Order bisa di-rebuild.
+            // Serahkan kredensial + saran connect manual / rebuild (password sudah
+            // tersimpan saat createVpsInstance di atas).
             let timeoutCard = buildTimeoutCardMarkdown({
               ip, port: rdpPort, hostname, osName: selectedOS.name,
               region: regionSlug, password: rdpPass,

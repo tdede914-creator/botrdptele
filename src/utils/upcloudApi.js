@@ -21,7 +21,7 @@
  * Behavior spesifik yang bot butuhkan:
  * - Base OS = Ubuntu 22.04 dari public template (auto-discovery UUID)
  * - Auto-root via cloud-init user_data (kompatibel dgn rootCloudInit dari handler)
- * - Disk auto-size by RAM (RAM 8GB -> 160GB, RAM 16GB -> 300GB, dst)
+ * - Disk auto-size by RAM (RAM <=8GB -> 150GB, 9-15GB -> 200GB, >=16GB -> 230GB)
  * - Firewall = "on" + accept-all rules (IPv4 + IPv6, direction=in, protocol=empty=any)
  *   Fallback: kalau add rule gagal, PUT firewall=off supaya SSH tetap work
  */
@@ -138,28 +138,18 @@ function upcloudHeaders(token) {
 // ============================================================================
 // Disk auto-size by RAM
 // ============================================================================
-// Berdasarkan patokan user: RAM 8GB -> 160GB, RAM 16GB -> 300GB.
+// Berdasarkan patokan user: RAM <=8GB -> 150GB, RAM >=16GB -> 230GB.
 // Step function biar predictable dan bot tidak error karena disk terlalu kecil
 // (Windows Server butuh minimal ~40GB, plus growth).
 function pickDiskGb(memoryMb) {
   const ramGb = Math.round(Number(memoryMb || 0) / 1024);
   // Patokan user:
-  //   RAM 8GB  -> 250GB
-  //   RAM 16GB -> 350GB
-  //   RAM 24GB -> 450GB
-  // Skala di atas & bawah menyesuaikan supaya tidak error karena disk kurang
-  // (Windows Server butuh minimal ~40GB) tapi juga tidak boros untuk RAM kecil.
-  if (ramGb <= 1)   return 50;
-  if (ramGb <= 2)   return 100;
-  if (ramGb <= 4)   return 150;
-  if (ramGb <= 8)   return 250;   // <-- patokan user
-  if (ramGb <= 12)  return 300;
-  if (ramGb <= 16)  return 350;   // <-- patokan user
-  if (ramGb <= 24)  return 450;   // <-- patokan user
-  if (ramGb <= 32)  return 600;
-  if (ramGb <= 64)  return 1000;
-  if (ramGb <= 128) return 1600;
-  return Math.max(1600, ramGb * 15);
+  //   RAM 8GB ke bawah  -> 150GB
+  //   RAM 16GB ke atas  -> 230GB
+  //   9-15GB (di antara) -> 200GB
+  if (ramGb <= 8)  return 150;
+  if (ramGb < 16)  return 200;
+  return 230;
 }
 
 // ============================================================================
@@ -291,6 +281,38 @@ function _sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// UpCloud membatasi rate API (HTTP 429 ERROR_RATE_LIMITED). GET yang sering dipanggil
+// (zone/plan/status) di-retry otomatis dengan exponential backoff + menghormati header
+// Retry-After, supaya create RDP/VPS tidak gagal hanya karena rate limit sesaat.
+async function _getWithRetry(url, config, opts = {}) {
+  const retries = opts.retries != null ? opts.retries : 4;
+  const baseMs = opts.baseMs || 1000;
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      return await axios.get(url, config);
+    } catch (err) {
+      lastErr = err;
+      const status = err && err.response && err.response.status;
+      const retryable = status === 429 || (status >= 500 && status < 600);
+      if (!retryable || i === retries) throw err;
+      const raHdr = err.response && err.response.headers && err.response.headers['retry-after'];
+      const ra = Number(raHdr);
+      const wait = (Number.isFinite(ra) && ra > 0)
+        ? Math.min(30000, ra * 1000)
+        : Math.min(15000, baseMs * Math.pow(2, i)) + Math.floor(Math.random() * 500);
+      console.warn(`[upcloud] HTTP ${status} pada ${url} — retry ${i + 1}/${retries} dalam ${wait}ms`);
+      await _sleep(wait);
+    }
+  }
+  throw lastErr;
+}
+
+// Cache ringan untuk data statis (zone) — dipanggil pada setiap order-options & create,
+// jadi caching menekan jumlah request => mengurangi peluang kena rate limit.
+const _zoneCache = new Map(); // token -> { data, ts }
+const _ZONE_TTL_MS = 10 * 60 * 1000;
+
 function _sanitizeHostname(name) {
   // Hostname RFC-compliant: alphanumeric + dash, max 63 char, no leading/trailing dash
   return (
@@ -393,13 +415,15 @@ async function upcloudServersCount(token) {
 // Zones
 // ============================================================================
 async function upcloudGetZones(token) {
-  const res = await axios.get(`${UPCLOUD_API}/zone`, {
+  const cached = _zoneCache.get(token);
+  if (cached && (Date.now() - cached.ts) < _ZONE_TTL_MS) return cached.data;
+  const res = await _getWithRetry(`${UPCLOUD_API}/zone`, {
     headers: upcloudHeaders(token),
     timeout: 30000,
   });
   const zones = (res.data && res.data.zones && res.data.zones.zone) || [];
   // Filter zone "public": "no" (private cloud zones) supaya user tidak salah pilih
-  return zones
+  const out = zones
     .filter((z) => String(z.public || 'yes').toLowerCase() !== 'no')
     .map((z) => ({
       slug: z.id,
@@ -408,6 +432,8 @@ async function upcloudGetZones(token) {
       available: true,
       provider: 'upcloud',
     }));
+  _zoneCache.set(token, { data: out, ts: Date.now() });
+  return out;
 }
 
 // ============================================================================
@@ -467,7 +493,7 @@ const _COMMON_RAM_GB = new Set([1, 2, 4, 6, 8, 12, 16, 24, 32, 48, 64, 96, 128])
 async function upcloudGetPlans(token) {
   let plans = [];
   try {
-    const planRes = await axios.get(`${UPCLOUD_API}/plan`, {
+    const planRes = await _getWithRetry(`${UPCLOUD_API}/plan`, {
       headers: upcloudHeaders(token),
       timeout: 30000,
     });
@@ -1154,7 +1180,7 @@ async function upcloudCreateServer(token, name, zone, sizeSlug, _imageSlug, user
 // Get server + wait for public IP
 // ============================================================================
 async function upcloudGetServer(token, uuid) {
-  const res = await axios.get(`${UPCLOUD_API}/server/${encodeURIComponent(uuid)}`, {
+  const res = await _getWithRetry(`${UPCLOUD_API}/server/${encodeURIComponent(uuid)}`, {
     headers: upcloudHeaders(token),
     timeout: 30000,
   });
@@ -1233,47 +1259,65 @@ async function upcloudPower(token, uuid, action) {
 // Delete server
 // ============================================================================
 /**
- * UpCloud tidak mengizinkan DELETE server yang state=started. Kita stop dulu
- * (hard stop untuk cepat), tunggu sampai stopped, baru DELETE dengan
- * ?storages=1&backups=delete supaya disk & backup ikut dibersihkan.
+ * Hapus server UpCloud BENAR-BENAR (server + storage), bukan cuma stop.
+ * UpCloud menolak DELETE server yang state != stopped, jadi:
+ *   1) stop (hard) lalu tunggu sampai state=stopped,
+ *   2) DELETE ?storages=1 dengan beberapa kali percobaan (tahan 429/5xx & state ilegal),
+ *   3) verifikasi server benar-benar hilang (GET -> 404).
+ * Sebelumnya delete kadang gagal senyap (param backups=delete ditolak / 429 /
+ * server belum stopped) sehingga server cuma ke-stop & menumpuk. Ini memperbaikinya.
  */
 async function upcloudDeleteServer(token, uuid) {
-  // 1. Stop kalau sedang running
+  const headers = upcloudHeaders(token);
+  const stopServer = async () => {
+    try {
+      await axios.post(
+        `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}/stop`,
+        { stop_server: { stop_type: 'hard', timeout: '30' } },
+        { headers, timeout: 30000 },
+      );
+    } catch (_) { /* ignore */ }
+  };
+
+  // 1) Stop kalau belum stopped, lalu tunggu sampai stopped (maks ~90 detik).
   try {
     const server = await upcloudGetServer(token, uuid);
     const state = String((server && server.state) || '').toLowerCase();
-    if (state === 'started' || state === 'running' || state === 'maintenance') {
-      try {
-        await axios.post(
-          `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}/stop`,
-          { stop_server: { stop_type: 'hard', timeout: '10' } },
-          { headers: upcloudHeaders(token), timeout: 30000 },
-        );
-      } catch (_) { /* ignore */ }
-
-      // Wait until stopped (max ~60 detik)
-      for (let i = 0; i < 20; i++) {
+    if (state && state !== 'stopped') {
+      await stopServer();
+      for (let i = 0; i < 30; i++) {
         await _sleep(3000);
         const s2 = await upcloudGetServer(token, uuid).catch(() => null);
-        const s2state = String((s2 && s2.state) || '').toLowerCase();
-        if (!s2 || s2state === 'stopped') break;
+        if (!s2) return { success: true }; // sudah hilang
+        if (String(s2.state || '').toLowerCase() === 'stopped') break;
       }
     }
-  } catch (_) { /* ignore, delete tetap dicoba */ }
+  } catch (_) { /* server mungkin sudah tidak ada; tetap coba delete */ }
 
-  // 2. Delete server + storage + backup
-  try {
-    await axios.delete(
-      `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1&backups=delete`,
-      {
-        headers: upcloudHeaders(token),
-        timeout: 60000,
-      },
-    );
-    return { success: true };
-  } catch (err) {
-    return { success: false, error: _extractError(err) };
+  // 2) DELETE server + storage, dengan retry. Coba pakai backups=delete dulu; kalau
+  //    ditolak, fallback ke storages=1 saja. Kalau state masih ilegal -> stop lagi.
+  const urlWithBackups = `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1&backups=delete`;
+  const urlStoragesOnly = `${UPCLOUD_API}/server/${encodeURIComponent(uuid)}?storages=1`;
+  let lastErr = null;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const url = attempt === 0 ? urlWithBackups : urlStoragesOnly;
+    try {
+      await axios.delete(url, { headers, timeout: 60000 });
+      // Verifikasi benar-benar terhapus.
+      const check = await upcloudGetServer(token, uuid).catch(() => null);
+      if (!check) return { success: true };
+      lastErr = new Error('server masih ada setelah DELETE');
+    } catch (err) {
+      const status = err && err.response && err.response.status;
+      if (status === 404) return { success: true }; // sudah terhapus
+      lastErr = err;
+      // 409/400 biasanya "server belum stopped" -> stop lagi sebelum retry.
+      if (status === 409 || status === 400) await stopServer();
+    }
+    await _sleep(4000);
   }
+  console.error(`[upcloud] GAGAL hapus server ${uuid}:`, _extractError(lastErr));
+  return { success: false, error: lastErr ? _extractError(lastErr) : 'delete gagal' };
 }
 
 // ============================================================================

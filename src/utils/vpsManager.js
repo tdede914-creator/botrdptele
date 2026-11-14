@@ -442,17 +442,19 @@ async function incrementProductSlotDuration(productId, durationDays) {
 
 
 async function createVpsInstance({ userId, apiId, productId, dropletId, ip, region, image, rootPassword, expiresAt = null, durationDays = null, rdpPort = null }) {
-  await db.run(
+  const res = await db.run(
     `INSERT INTO vps_instances (user_id, api_id, origin_api_id, product_id, droplet_id, ip, region, image, root_password, created_at, expires_at, duration_days, rdp_port, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
     [userId, apiId, apiId, productId, dropletId, ip, region, image, rootPassword, Math.floor(Date.now() / 1000), expiresAt, durationDays, rdpPort]
   );
+  return res && res.id;
 }
 
 async function listUserVps(userId) {
   // Backward compatibility: returns both VPS and RDP instances (active)
   return await db.all(
     `SELECT vi.id, vi.droplet_id, vi.ip, vi.region, vi.image, vi.created_at, vi.rdp_port,
+            vi.root_password, vi.expires_at, vi.duration_days,
             vp.product_type, vp.size_slug, vp.price
      FROM vps_instances vi
      LEFT JOIN vps_products vp ON vp.id = vi.product_id
@@ -736,6 +738,38 @@ async function getFallbackProductForInstancePrefer(vps, excludeApiId = null) {
   );
 }
 
+// Daftar SEMUA produk (di API lain) dengan spek sama & masih ada stok, untuk kandidat
+// rebuild-fallback. Menyertakan token API tiap kandidat agar pemanggil bisa memfilter
+// berdasarkan PROVIDER (rebuild hanya boleh pindah ke API provider yang sama).
+async function listFallbackProductsForInstance(vps, excludeApiId = null) {
+  if (!vps) return [];
+  const productType = vps.product_type || (String(vps.image || '').startsWith('rdp:') ? 'rdp' : 'vps');
+  const ram = Number(vps.ram || 0);
+  const core = Number(vps.core || 0);
+  const d = Number(vps.duration_days || 30);
+  if (!ram || !core) return [];
+  const priceCol = (d === 1) ? 'price_daily' : (d === 7 ? 'price_weekly' : 'price');
+  const slotCol = (d === 1) ? 'slot_daily' : (d === 7 ? 'slot_weekly' : 'slot_monthly');
+  const tf = _productTypeFilter(productType);
+  const params = [...tf.params, ram, core];
+  let notApi = '';
+  if (excludeApiId) { notApi = ' AND p.api_id != ? '; params.push(Number(excludeApiId)); }
+  return await db.all(
+    `SELECT p.id, p.api_id, p.size_slug, p.product_type, a.token AS api_token
+     FROM vps_products p
+     JOIN do_api a ON a.id = p.api_id AND a.status = 1
+     WHERE p.status = 1
+       AND COALESCE(p.${slotCol},0) > 0
+       AND ${tf.sql}
+       AND p.ram = ?
+       AND p.core = ?
+       AND p.${priceCol} IS NOT NULL
+       ${notApi}
+     ORDER BY p.id ASC`,
+    params
+  );
+}
+
 // Update price for all APIs with same spec (ram/core) and consolidate duplicates after update.
 // For VPS/RDP family (vps/rdp/combo), the same price applies to all family rows sharing
 // the same (ram, core) so the shared-stock UX works transparently.
@@ -876,5 +910,6 @@ module.exports = {
   updateVpsInstanceApiProduct,
   getProductAny,
   getFallbackProductForInstancePrefer,
+  listFallbackProductsForInstance,
   getAdminPowerTarget,
 };

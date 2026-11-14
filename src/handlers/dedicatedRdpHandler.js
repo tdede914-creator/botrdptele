@@ -413,7 +413,7 @@ async function handleDedicatedVPSCredentials(bot, msg, sessionManager) {
               '📝 Catatan:\n' +
               '• Instalasi berjalan di background\n' +
               '• Anda akan mendapat notifikasi otomatis\n' +
-              '• Estimasi: 30-40 menit\n' +
+              '• Estimasi: ±15-25 menit\n' +
               '• Jangan tutup chat ini!'
             );
 
@@ -514,7 +514,7 @@ async function handleDedicatedVPSCredentials(bot, msg, sessionManager) {
               `🌐 IP: ${session.ip}:4443\n` +
               `👤 Username: administrator\n` +
               `🔑 Password: ${session.rdpPassword}\n\n` +
-              `⏳ Tunggu 30-40 menit jika masih ada masalah, cek berkala`,
+              `⏳ Tunggu ±15-25 menit jika masih ada masalah, cek berkala`,
               {
                 reply_markup: {
                   inline_keyboard: [

@@ -760,16 +760,23 @@ async function processAddApi(bot, msg, sessionManager) {
     : provider === 'linode' ? 'Linode'
     : provider === 'upcloud' ? 'UpCloud'
     : 'DigitalOcean';
-  await bot.sendMessage(chatId, `⏳ Mengecek dan menyimpan API ${label} renter...`);
+  const isOnce = sess.returnTo === 'open_api_rdp';
+  await bot.sendMessage(chatId, `⏳ Mengecek API ${label}${isOnce ? ' (sekali pakai)' : ' renter'}...`);
   try {
-    const res = await renterManager.addApi(chatId, msg.text, provider);
+    const res = await renterManager.addApi(chatId, msg.text, provider, isOnce ? 1 : 0);
     const returnTo = sess.returnTo;
     sessionManager.clearAdminSession(chatId);
     if (returnTo === 'open_api_rdp') {
-      await bot.sendMessage(chatId,
-        `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}`,
-        { reply_markup: { inline_keyboard: [[{ text: '🚀 Lanjut Pilih Server & Install RDP', callback_data: 'install_src_api' }], [{ text: '🏠 Menu Utama', callback_data: 'back_to_menu' }]] } }
-      );
+      // Langsung ke pemilihan region memakai token yang baru dimasukkan (sekali pakai).
+      // Token tetap dihapus otomatis setelah VPS dibuat (consumeOnceApi di createRdp).
+      const sent = await bot.sendMessage(chatId,
+        `✅ Token ${res.provider || label} diterima (Email/ID: ${res.email || '-'}).\n` +
+        `🔒 Sekali pakai — tidak disimpan. Memuat pilihan region...`);
+      try {
+        await pickApi(bot, chatId, sent.message_id, 'rdp', res.id, sessionManager);
+      } catch (e) {
+        await bot.sendMessage(chatId, `❌ Gagal memuat region: ${e.message || e}`, { reply_markup: { inline_keyboard: [[{ text: '« Coba lagi', callback_data: 'install_src_api' }]] } });
+      }
     } else {
       await bot.sendMessage(chatId, `✅ API ${res.provider || label} berhasil ${res.exists ? 'diaktifkan kembali' : 'ditambahkan'}.\nEmail/ID: ${res.email || '-'}\n\nKetik /start untuk kembali.`);
     }
@@ -1015,9 +1022,13 @@ async function createRdp(bot, chatId, messageId, apiId, sizeSlug, region, winInd
   }
   // Port RDP per-provider: UpCloud=3389 (lolos firewall default), lainnya=4443.
   const rdpPort = rdpPortForToken(token);
-  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId, rdpPort });
+  // Token sekali-pakai: hapus dari DB sekarang (token sudah ada di variabel lokal
+  // `token` untuk seluruh proses install). Instance disimpan dengan api_id null.
+  let saveApiId = apiId;
+  try { if (await renterManager.consumeOnceApi(chatId, apiId)) saveApiId = null; } catch (_) {}
+  await renterManager.saveInstance({ userId: chatId, type: 'rdp', dropletId, ip, sizeSlug: createSizeSlug, region, image: `rdp:${selectedOS.version}`, rootPassword: rootPass, rdpPassword: rdpPass, windowsVersion: selectedOS.version, apiId: saveApiId, rdpPort });
   await safeMessageEditor.editMessage(bot, chatId, messageId,
-    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
+    `🚀 Memulai instalasi Windows RDP renter...\n\n🌐 IP: ${ip}\n💿 Windows: ${selectedOS.name}\n🔒 Port RDP: ${rdpPort}\n\n⏰ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot). Kamu akan dapat notifikasi saat RDP siap.`,
     { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } }
   );
 
@@ -1269,14 +1280,20 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
   const x = await renterManager.getInstance(chatId, instanceId);
   if (!x) return bot.sendMessage(chatId, '❌ Data tidak ditemukan.');
   const token = x.api_id ? await renterManager.getApiToken(chatId, x.api_id) : await renterManager.getDefaultApiToken(chatId);
-  if (!token) return bot.sendMessage(chatId, '❌ API cloud aktif tidak ditemukan. Aktifkan/tambahkan API dulu.');
 
+  // DELETE boleh dilakukan walau API sudah tidak ada (biar entri stale/menumpuk bisa
+  // dibersihkan dari daftar). Kalau token ada, sekalian hapus droplet-nya.
   if (action === 'delete') {
     await safeMessageEditor.editMessage(bot, chatId, messageId, '⏳ Menghapus server renter...', { reply_markup: { inline_keyboard: [[{ text: '🏠 Menu Renter', callback_data: 'renter_menu' }]] } });
-    if (x.droplet_id) await deleteDroplet(token, x.droplet_id, x.region || null);
+    if (x.droplet_id && token) { try { await deleteDroplet(token, x.droplet_id, x.region || null); } catch (_) {} }
     await renterManager.markInstanceDeleted(chatId, instanceId);
-    return bot.sendMessage(chatId, '✅ Server berhasil dihapus.');
+    return bot.sendMessage(chatId, token
+      ? '✅ Server berhasil dihapus.'
+      : '✅ Dihapus dari daftar. (API sudah tidak ada — kalau VPS-nya masih hidup, hapus manual di dashboard cloud kamu.)');
   }
+
+  // Aksi selain delete (rebuild/reset) butuh token API aktif.
+  if (!token) return bot.sendMessage(chatId, '❌ API cloud aktif tidak ditemukan. Aktifkan/tambahkan API dulu.');
 
   if (action === 'reset_vps') {
     const newPass = genAlphaNum(14);
@@ -1342,7 +1359,7 @@ async function executeService(bot, chatId, messageId, action, instanceId, winInd
       }
 
       const rdpPort = rdpPortForToken(token);
-      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: ' + rdpPort + '\n\nEstimasi 30-40 menit.');
+      await bot.sendMessage(chatId, '🚀 Memulai rebuild RDP renter...\n\n🌐 IP: ' + r.ip + '\n💿 Windows: ' + selectedOS.name + '\n🔒 Port RDP: ' + rdpPort + '\n\nEstimasi ±15-25 menit.');
 
       // BUGFIX (save password BEFORE install): previously saved AFTER
       // `await installPromise`. If installPromise rejected or the user
@@ -1525,26 +1542,18 @@ async function processAdminRemove(bot, msg, sessionManager) {
 // tidak ter-gate, jadi callback renter_rdp_api/regionpick/sizepick/win yang ada bisa dipakai.
 // ============================================================
 async function startOpenApiRdp(bot, chatId, messageId, sessionManager) {
-  const apis = await renterManager.listApis(chatId, true);
-  if (!apis.length) {
-    return safeMessageEditor.editMessage(bot, chatId, messageId,
-      '🔑 *Install RDP via API Cloud Sendiri*\n\nKamu belum punya API cloud tersimpan. Tambahkan token API provider kamu ' +
-      '(VPS dibuat & RDP diinstall otomatis di akun cloud milikmu):',
-      { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
-        [{ text: '➕ API DigitalOcean', callback_data: 'open_api_add:digitalocean' }],
-        [{ text: '➕ API Linode', callback_data: 'open_api_add:linode' }],
-        [{ text: '➕ API AWS', callback_data: 'open_api_add:aws' }],
-        [{ text: '➕ API UpCloud', callback_data: 'open_api_add:upcloud' }],
-        [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
-      ] } }
-    );
-  }
-  const kb = apis.map(a => ([{ text: apiLabel(a), callback_data: `renter_rdp_api:${a.id}` }]));
-  kb.push([{ text: '➕ Tambah API lain', callback_data: 'open_api_add:digitalocean' }]);
-  kb.push([{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]);
+  // Menu ini SEKALI PAKAI: token tidak disimpan/di-list. Bersihkan sisa token
+  // sekali-pakai yang mungkin ditinggalkan (ditambahkan tapi tidak jadi install).
+  try { await renterManager.deleteOnceApis(chatId); } catch (_) {}
   return safeMessageEditor.editMessage(bot, chatId, messageId,
-    '🔑 *Install RDP via API Cloud Sendiri*\n\nPilih API cloud untuk membuat VPS + install RDP:',
-    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: kb } });
+    '🔑 *Install RDP via API Cloud Sendiri*\n\n' +
+    'Pilih provider lalu tempel token API-nya. VPS dibuat & RDP diinstall otomatis di akun cloud milikmu.\n\n' +
+    '🔒 *Token sekali pakai* — tidak disimpan, otomatis dihapus setelah dipakai.',
+    { parse_mode: 'Markdown', reply_markup: { inline_keyboard: [
+      [{ text: '➕ DigitalOcean', callback_data: 'open_api_add:digitalocean' }, { text: '➕ Linode', callback_data: 'open_api_add:linode' }],
+      [{ text: '➕ AWS', callback_data: 'open_api_add:aws' }, { text: '➕ UpCloud', callback_data: 'open_api_add:upcloud' }],
+      [{ text: '« Kembali', callback_data: 'install_dedicated_rdp' }]
+    ] } });
 }
 
 async function promptOpenApiAdd(bot, chatId, messageId, sessionManager, provider = 'digitalocean') {

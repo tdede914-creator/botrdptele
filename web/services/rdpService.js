@@ -10,7 +10,7 @@ const crypto = require('crypto');
 const net = require('net');
 
 const vpsManager = require('../../src/utils/vpsManager');
-const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken } = require('../../src/utils/doApi');
+const { getRegions, getSizesForRegion, createDroplet, waitPublicIp, deleteDroplet, isLinodeToken, isAwsToken, isUpCloudToken, linodeSetDirectDisk, rdpPortForToken, makeAwsToken, getAccountEmail } = require('../../src/utils/doApi');
 const { isAdmin, getBalance, deductBalance, addBalance } = require('../../src/utils/userManager');
 const { installDedicatedRDP } = require('../../src/utils/dedicatedRdpInstaller');
 const RDPMonitor = require('../../src/utils/rdpMonitor');
@@ -123,7 +123,7 @@ function mkMonitorLogger(jobId, tag) {
     if (am) {
       const x = Number(am[1]), y = Number(am[2]) || 50;
       j.progress = Math.max(Number(j.progress) || 0, Math.min(99, 70 + Math.round((x / y) * 29)));
-      j.message = `Menunggu Windows boot & RDP siap (cek ${x}/${y})...`;
+      j.message = 'Menunggu Windows boot & RDP siap...';
     }
   };
 }
@@ -267,9 +267,11 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
 
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
 
+      // Order RDP TIDAK di-refund saat gagal — VPS tetap dibuat & bisa di-Rebuild dari
+      // menu "VPS/RDP Saya" (refund hanya untuk jasa Install RDP, bukan order).
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
       if (!sshReady) {
-        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS lalu rebuild.' });
+        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS di menu VPS/RDP Saya lalu Rebuild.' });
         return;
       }
 
@@ -298,7 +300,7 @@ async function provisionOrder(uid, { productId, regionSlug, osId, durationDays, 
         setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
         try { const n = require('./notify'); n.orderSuccess({ event: 'RDP', ip, spec: `RAM ${prod.ram}GB / ${prod.core} CORE`, durationDays: d, apiId: prod.api_id, region: regionSlug, windows: selectedOS.name, buyerId: uid }); n.testimonial({ productName: `RDP ${selectedOS.name}` }); } catch (_) {}
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
+        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). VPS sudah dibuat & Windows kemungkinan sedang boot — coba connect beberapa menit lagi, atau Rebuild dari menu VPS/RDP Saya.', progress: 95, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       }
     } catch (e) {
       console.error('[web] provisionOrder error:', e);
@@ -402,19 +404,50 @@ function baseUbuntuForToken(token) {
   return isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
 }
 
-// Validasi token + daftar region yang tersedia di akun cloud user.
-async function listApiRegions(apiToken) {
-  const token = String(apiToken || '').trim();
-  if (!token) return { ok: false, error: 'API token cloud wajib diisi.' };
-  try {
-    const provider = providerOfToken(token);
-    const regions = await getRegions(token);
-    if (!regions || !regions.length) return { ok: false, error: 'Token valid tapi tidak ada region tersedia.' };
-    return { ok: true, provider, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
-  } catch (e) {
-    const msg = (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || e;
-    return { ok: false, error: 'Token API tidak valid / gagal terhubung ke cloud: ' + msg };
+// Ubah token mentah yang di-paste user menjadi kandidat token internal doApi.
+// Mendukung: UpCloud (ucat_...), AWS (aws:... atau "ACCESS_KEY|SECRET[|REGION]"),
+// Linode (linode:... atau PAT mentah), DigitalOcean (token mentah).
+// DO & Linode PAT sama-sama hex tanpa prefiks -> ambigu, jadi dicoba DO dulu lalu Linode.
+function normalizeCloudTokenCandidates(raw) {
+  const t = String(raw || '').trim();
+  if (!t) return [];
+  if (t.startsWith('ucat_')) return [{ provider: 'upcloud', token: t }];
+  if (t.startsWith('aws:')) return [{ provider: 'aws', token: t }];
+  if (t.startsWith('linode:')) return [{ provider: 'linode', token: t }];
+  // AWS mentah: "AKIA.../ASIA... | SECRET [| REGION]" (pemisah | atau :)
+  const awsRaw = t.match(/^((?:AKIA|ASIA)[A-Z0-9]{8,})\s*[|:]\s*([^|:\s]+)(?:\s*[|:]\s*([A-Za-z0-9-]+))?$/i);
+  if (awsRaw) return [{ provider: 'aws', token: makeAwsToken(awsRaw[1], awsRaw[2], awsRaw[3] || 'us-east-1') }];
+  if (t.includes('|')) {
+    const p = t.split('|').map((x) => x.trim());
+    if (p.length >= 2 && p[0] && p[1]) return [{ provider: 'aws', token: makeAwsToken(p[0], p[1], p[2] || 'us-east-1') }];
   }
+  // Ambigu: DigitalOcean atau Linode. Coba DO dulu, lalu Linode.
+  return [{ provider: 'digitalocean', token: t }, { provider: 'linode', token: 'linode:' + t }];
+}
+
+// Validasi token + daftar region yang tersedia di akun cloud user.
+// Mengembalikan juga `token` (bentuk internal ternormalisasi) yang HARUS dipakai
+// frontend untuk request berikutnya (sizes + order) agar provider terdeteksi benar.
+async function listApiRegions(apiToken) {
+  const candidates = normalizeCloudTokenCandidates(apiToken);
+  if (!candidates.length) return { ok: false, error: 'API token cloud wajib diisi.' };
+  let lastErr = 'Token tidak valid.';
+  for (const c of candidates) {
+    try {
+      // AWS: daftar region bersifat statis (tak butuh auth). Verifikasi kredensial
+      // via getAccountEmail bersifat best-effort saja — JANGAN tolak kalau gagal,
+      // karena banyak access key EC2 tidak punya izin IAM untuk baca info akun.
+      // Kredensial yang salah akan ketahuan (dan gagal) saat pembuatan VPS.
+      const regions = await getRegions(c.token);
+      if (regions && regions.length) {
+        return { ok: true, provider: c.provider, token: c.token, regions: regions.slice(0, 80).map((r) => ({ slug: r.slug, name: r.name || r.slug })) };
+      }
+      lastErr = 'Token valid tapi tidak ada region tersedia.';
+    } catch (e) {
+      lastErr = (e && e.response && e.response.data && e.response.data.message) || (e && e.message) || String(e);
+    }
+  }
+  return { ok: false, error: 'Token API tidak valid / gagal terhubung ke cloud: ' + lastErr };
 }
 
 // Daftar spesifikasi (size) untuk token + region.
@@ -488,7 +521,11 @@ async function provisionInstallOwnApi(uid, { apiToken, regionSlug, sizeSlug, osV
       }
       setJob(jobId, { step: 'wait_ssh', message: 'Menunggu SSH siap...', progress: 30, server: { ip, port: rdpPort, username: 'administrator', password: rdpPass, os: selectedOS.name, region: regionSlug } });
       const sshReady = await waitForPort(ip, 22, 12 * 60 * 1000, 15000);
-      if (!sshReady) { setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap. Cek VPS di akun cloud kamu, lalu ulangi.' }); return; }
+      if (!sshReady) {
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'wait_ssh', message: 'SSH tidak siap di VPS akun cloud kamu.' + (refund ? ' Biaya install dikembalikan.' : '') });
+        return;
+      }
 
       setJob(jobId, { step: 'installing', message: 'Menginstall Windows RDP...', progress: 35 });
       const installCfg = { osVersion: selectedOS.version, password: rdpPass, provider, rdpPort };
@@ -512,7 +549,8 @@ async function provisionInstallOwnApi(uid, { apiToken, regionSlug, sizeSlug, osV
       if (result && result.success && result.rdpReady) {
         setJob(jobId, { status: 'ready', step: 'done', message: 'RDP siap digunakan!', progress: 100, server });
       } else {
-        setJob(jobId, { status: 'installing_timeout', step: 'monitor', message: 'RDP belum bisa dikonfirmasi otomatis (monitor timeout). Windows kemungkinan masih boot — coba connect beberapa menit lagi.', progress: 95, server });
+        if (refund) { try { await addBalance(refund.uid, refund.amount); } catch (_) {} }
+        setJob(jobId, { status: 'failed', step: 'monitor', message: 'RDP tidak online dalam ' + Math.round(RDP_MONITOR_TIMEOUT_MS / 60000) + ' menit — dianggap gagal.' + (refund ? ' Biaya install dikembalikan.' : '') + ' VPS bare-Ubuntu tetap ada di akun cloud kamu.', progress: 100, server });
       }
     } catch (e) {
       console.error('[web] provisionInstallOwnApi error:', e);

@@ -18,7 +18,7 @@ async function handleTutorial(bot, chatId, messageId) {
 • Masukkan password root
 • Pilih versi Windows
 • Masukkan password RDP
-• Tunggu proses instalasi (30-40 menit)
+• Tunggu proses instalasi (±15-25 menit)
 
 4️⃣ *Penggunaan RDP*
 • Gunakan aplikasi Remote Desktop

@@ -18,11 +18,11 @@
 //   - Alpine DD image to disk: ~1 min
 //   - Alpine reboot to Windows (drives, sysprep, first boot): 5-15 min
 //   - Windows fully boot + RDP service listen: total ~15-30 min post-reboot
-// UpCloud specifically slower karena template pertama kali download bisa
-// susah reach mirror; bumped dari 25 -> 40 min supaya user tidak keburu
-// nyerah / bot false negative. Kalau setelah 40 min port 4443 masih timeout,
-// itu memang install gagal (biasanya UEFI/BIOS mismatch atau image corrupt).
-const RDP_MONITOR_TIMEOUT_MS = 40 * 60 * 1000;
+// Timeout monitor RDP = 25 menit. Observasi lapangan: instalasi yang belum
+// online >23 menit (khususnya Linode) praktis selalu gagal (Direct Disk telat/
+// image corrupt/first-boot Windows macet), jadi menunggu sampai 40 menit hanya
+// menahan refund & bikin user lama menunggu. 25 menit = ambang praktis.
+const RDP_MONITOR_TIMEOUT_MS = 25 * 60 * 1000;
 
 /**
  * Windows RDP password requirements (RDP + Windows local account):

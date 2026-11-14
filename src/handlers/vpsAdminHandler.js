@@ -214,6 +214,7 @@ async function showProviderFilterMenu(bot, chatId, messageId, target = 'stock') 
     [{ text: '🌊 Provider DigitalOcean', callback_data: `${prefix}:digitalocean` }],
     [{ text: '🟣 Provider Linode', callback_data: `${prefix}:linode` }],
     [{ text: '🟠 Provider AWS', callback_data: `${prefix}:aws` }],
+    [{ text: '🟢 Provider UpCloud', callback_data: `${prefix}:upcloud` }],
     [{ text: '☁️ Semua Provider', callback_data: `${prefix}:all` }],
     [{ text: '« Kembali', callback_data: 'vps_admin_stock_provider' }]
   ];

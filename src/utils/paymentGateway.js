@@ -9,6 +9,8 @@ function getActiveGateway() {
   if (raw === 'pakasir') return 'pakasir';
   if (raw === 'orderkuota') return 'orderkuota';
   if (raw === 'valqenix') return 'valqenix';
+  if (raw === 'tokopay') return 'tokopay';
+  if (raw === 'paydisini') return 'paydisini';
   return 'dompetx';
 }
 
@@ -54,50 +56,46 @@ async function createPakasirPayment(reffId, amount) {
   if (!slug) return { success: false, error: 'PAKASIR_SLUG belum diisi di .env' };
   if (!apiKey) return { success: false, error: 'PAKASIR_API_KEY belum diisi di .env' };
 
-  const payload = {
-    project: slug,
-    order_id: reffId,
-    amount: Number(amount),
-    api_key: apiKey
-  };
-
   try {
-    const res = await axios.post(`${PAKASIR_BASE_URL}/api/transactioncreate/${encodeURIComponent(method)}`, payload, {
-      headers: { 'Content-Type': 'application/json' },
+    // Pakasir API v2: POST /api/v2/create-transaction/{slug}/{order_id}
+    // Header X-Api-Key, body { method, amount }. (v1 /api/transactioncreate sudah 404.)
+    const url = `${PAKASIR_BASE_URL}/api/v2/create-transaction/${encodeURIComponent(slug)}/${encodeURIComponent(reffId)}`;
+    const res = await axios.post(url, { method, amount: Number(amount) }, {
+      headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
       timeout: 30000
     });
 
-    const payment = res.data?.payment || res.data?.transaction || res.data?.data || res.data || {};
-    const orderId = payment.order_id || payment.reference || reffId;
-    const total = Number(payment.amount || amount);
-
-    const paymentUrl =
-      payment.payment_url ||
-      payment.paymentUrl ||
-      payment.checkout_url ||
-      `${PAKASIR_BASE_URL}/pay/${encodeURIComponent(slug)}/${total}?order_id=${encodeURIComponent(orderId)}${method === 'qris' ? '&qris_only=1' : ''}`;
+    const d = res.data || {};
+    const txnId = d.txn_id || d.txnId || reffId;   // dipakai untuk cek status & cancel
+    const orderId = d.order_id || reffId;
+    const total = Number(d.total_payment || d.amount || amount);
+    // method=payment_link -> balas { txn_id, payment_link }. Selain itu pakai qr_string
+    // + bangun URL pembayaran v2 (pay-v2/{txn_id}).
+    const paymentUrl = d.payment_link
+      || `${PAKASIR_BASE_URL}/pay-v2/${encodeURIComponent(txnId)}${method === 'qris' ? '?qris_only=1' : ''}`;
 
     return {
       success: true,
       data: {
-        id: orderId,
+        id: txnId,
         reff_id: orderId,
         nominal: total,
-        fee: Number(payment.fee || 0),
+        fee: Number(d.fee || 0),
         tambahan: 0,
-        get_balance: Number(payment.amount || amount),
-        qr_string: payment.payment_number || payment.qr_string || payment.qris_string || payment.qr_payload || payment.qrCode || payment.qr_code || null,
-        qr_image: payment.qr_image || payment.qr_url || payment.qris_url || null,
+        get_balance: Number(d.amount || amount),
+        qr_string: d.qr_string || null,
+        qr_image: null,
         payment_url: paymentUrl,
-        status: payment.status || 'pending',
-        created_at: payment.created_at || new Date().toISOString(),
-        expired_at: payment.expired_at || null,
+        va_number: d.va_number || null,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        expired_at: d.expired_at || null,
         payment_gateway: 'pakasir',
-        raw: res.data
+        raw: d
       }
     };
   } catch (error) {
-    console.error('Pakasir create payment error:', error?.response?.data || error.message);
+    console.error('Pakasir create payment error (v2):', error?.response?.data || error.message);
     return { success: false, error: extractError(error) };
   }
 }
@@ -109,39 +107,36 @@ async function checkPakasirStatus(transactionId, amount = null) {
   if (!apiKey) return { success: false, error: 'PAKASIR_API_KEY belum diisi di .env' };
   if (!transactionId) return { success: false, error: 'transactionId kosong' };
 
-  const trxAmount = Number(amount || await findAmountForTransaction(transactionId));
-  if (!trxAmount) return { success: false, error: 'Amount transaksi Pakasir tidak ditemukan' };
-
   try {
-    const url =
-      `${PAKASIR_BASE_URL}/api/transactiondetail` +
-      `?project=${encodeURIComponent(slug)}` +
-      `&amount=${encodeURIComponent(trxAmount)}` +
-      `&order_id=${encodeURIComponent(transactionId)}` +
-      `&api_key=${encodeURIComponent(apiKey)}`;
+    // Pakasir API v2: GET /api/v2/transaction-status/{slug}/{txn_id}, header X-Api-Key.
+    // (v2 tidak butuh amount lagi — cukup txn_id. Status: pending|completed|canceled.)
+    const url = `${PAKASIR_BASE_URL}/api/v2/transaction-status/${encodeURIComponent(slug)}/${encodeURIComponent(transactionId)}`;
+    const res = await axios.get(url, {
+      headers: { 'X-Api-Key': apiKey },
+      timeout: 15000
+    });
 
-    const res = await axios.get(url, { timeout: 15000 });
-    const trx = res.data?.transaction || res.data?.payment || res.data?.data || res.data || {};
-
+    const trx = res.data || {};
+    const amt = Number(trx.amount || amount || 0);
     return {
       success: true,
       data: {
-        id: trx.order_id || transactionId,
+        id: trx.txn_id || transactionId,
         reference: trx.order_id || transactionId,
-        status: trx.status || 'unknown',
-        amount: Number(trx.amount || trxAmount),
-        fee: Number(trx.fee || 0),
-        get_balance: Number(trx.amount || trxAmount),
-        qr_image: trx.qr_image || trx.qr_url || null,
-        qr_string: trx.payment_number || trx.qr_string || trx.qris_string || null,
-        paid_at: trx.completed_at || trx.paid_at || trx.updated_at || null,
-        expired_at: trx.expired_at || null,
+        status: trx.status || 'unknown',   // completed = sukses
+        amount: amt,
+        fee: 0,
+        get_balance: amt,
+        qr_image: null,
+        qr_string: null,
+        paid_at: trx.completed_at || null,
+        expired_at: null,
         payment_gateway: 'pakasir',
-        raw: res.data
+        raw: trx
       }
     };
   } catch (error) {
-    console.error('Pakasir status error:', error?.response?.data || error.message);
+    console.error('Pakasir status error (v2):', error?.response?.data || error.message);
     return { success: false, error: extractError(error) };
   }
 }
@@ -285,8 +280,267 @@ function verifyValqenixWebhook(rawBody, signatureHeader, timestamp, secret) {
   } catch (_) { return false; }
 }
 
+// ============================================================
+// TOKOPAY — QRIS (Simple Order API v1, https://api.tokopay.id/v1)
+// Order & cek-status pakai merchant_id + secret langsung di query (tanpa signature).
+// Signature (MD5) hanya untuk balance & tarik-saldo (tidak dipakai untuk bayar).
+// ============================================================
+const TOKOPAY_BASE_URL = (process.env.TOKOPAY_BASE_URL || 'https://api.tokopay.id/v1').replace(/\/$/, '');
+
+function getTokopayConfig() {
+  return {
+    merchantId: (process.env.TOKOPAY_MERCHANT_ID || process.env.TOKOPAY_MERCHANT || '').trim(),
+    secret: (process.env.TOKOPAY_SECRET || '').trim(),
+    method: (process.env.TOKOPAY_METHOD || 'QRIS').trim() || 'QRIS',
+    baseUrl: TOKOPAY_BASE_URL
+  };
+}
+
+// Create order: GET /v1/order?merchant=&secret=&ref_id=&nominal=&metode=
+// Response (QRIS): { data: { pay_url, qr_link, qr_string, total_bayar, total_diterima, trx_id }, status: 'Success' }
+async function createTokopayPayment(reffId, amount) {
+  const cfg = getTokopayConfig();
+  if (!cfg.merchantId) return { success: false, error: 'TOKOPAY_MERCHANT_ID belum diisi di .env' };
+  if (!cfg.secret) return { success: false, error: 'TOKOPAY_SECRET belum diisi di .env' };
+  try {
+    const res = await axios.get(`${cfg.baseUrl}/order`, {
+      params: { merchant: cfg.merchantId, secret: cfg.secret, ref_id: reffId, nominal: Number(amount), metode: cfg.method },
+      timeout: 30000
+    });
+    const root = res.data || {};
+    const d = root.data || {};
+    // Sukses TokoPay: status === 1 (angka) ATAU ada trx_id. Kalau gagal, tampilkan
+    // pesan asli TokoPay (error_msg/message/status) biar ketahuan alasannya.
+    if (!d.trx_id) {
+      const msg = root.error_msg || root.message || (d && d.message)
+        || (root.status !== undefined && String(root.status) !== '1' ? ('status=' + root.status) : null)
+        || JSON.stringify(root).slice(0, 300);
+      return { success: false, error: 'TokoPay: ' + msg };
+    }
+    const total = Number(d.total_bayar || amount);
+    const net = Number(d.total_diterima || total);
+    return {
+      success: true,
+      data: {
+        id: d.trx_id,            // dipakai untuk cek status (check-order)
+        reff_id: reffId,
+        nominal: total,
+        fee: Math.max(0, total - net),
+        tambahan: 0,
+        get_balance: net,
+        qr_string: d.qr_string || null,
+        qr_image: d.qr_link || null,
+        payment_url: d.pay_url || null,
+        status: 'pending',
+        created_at: new Date().toISOString(),
+        expired_at: d.expired_at || null,
+        payment_gateway: 'tokopay',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('TokoPay create payment error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+// Cek status: GET /v1/check-order?merchant=&secret=&trx_id=
+// Response: { rc:200, message:'Data Found', data:{ status:'Success'|'Unpaid', nominal, ... } }
+async function checkTokopayStatus(transactionId) {
+  const cfg = getTokopayConfig();
+  if (!cfg.merchantId) return { success: false, error: 'TOKOPAY_MERCHANT_ID belum diisi di .env' };
+  if (!cfg.secret) return { success: false, error: 'TOKOPAY_SECRET belum diisi di .env' };
+  if (!transactionId) return { success: false, error: 'transactionId kosong' };
+  try {
+    const res = await axios.get(`${cfg.baseUrl}/check-order`, {
+      params: { merchant: cfg.merchantId, secret: cfg.secret, trx_id: transactionId },
+      timeout: 15000
+    });
+    const root = res.data || {};
+    const d = root.data || {};
+    const amt = Number(d.nominal || 0);
+    return {
+      success: true,
+      data: {
+        id: d.trx_id || transactionId,
+        reference: d.reff_id || transactionId,
+        status: String(d.status || 'unknown').toLowerCase(), // 'Success' -> 'success' (= lunas)
+        amount: amt,
+        fee: Math.max(0, Number(d.jumlah_bayar || amt) - amt),
+        get_balance: amt,
+        qr_string: null,
+        qr_image: null,
+        paid_at: d.updated_at || null,
+        expired_at: d.expired_at || null,
+        payment_gateway: 'tokopay',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('TokoPay status error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+// ============================================================
+// PAYDISINI — QRIS (https://api.paydisini.co.id/v1/)
+// Semua request: POST form-urlencoded ke URL yang sama, dibedakan field `request`
+// (new | status | cancel). Signature = md5(key + ... + nama_aksi).
+// Status & cancel memakai unique_code milik kita (bukan pay_id).
+// ============================================================
+function getPaydisiniConfig() {
+  return {
+    apiKey: (process.env.PAYDISINI_API_KEY || process.env.PAYDISINI_KEY || '').trim(),
+    merchantId: (process.env.PAYDISINI_MERCHANT_ID || '').trim(),
+    service: (process.env.PAYDISINI_SERVICE || '11').trim() || '11',       // 11 = QRIS
+    validTime: String(Number(process.env.PAYDISINI_VALID_TIME || 1800) || 1800), // detik
+    typeFee: (process.env.PAYDISINI_TYPE_FEE || '1').trim() || '1',         // 1 = fee ditanggung pembeli, 2 = merchant
+    returnUrl: (process.env.PAYDISINI_RETURN_URL || '').trim(),
+    baseUrl: (process.env.PAYDISINI_BASE_URL || 'https://api.paydisini.co.id/v1/').trim()
+  };
+}
+
+function md5(s) { return crypto.createHash('md5').update(String(s)).digest('hex'); }
+
+async function paydisiniPost(cfg, fields) {
+  const body = new URLSearchParams();
+  Object.entries(fields).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') body.append(k, String(v)); });
+  const res = await axios.post(cfg.baseUrl, body.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 30000
+  });
+  return res.data || {};
+}
+
+function paydisiniFail(root) {
+  const msg = root.msg || root.message || JSON.stringify(root).slice(0, 300);
+  return { success: false, error: 'Paydisini: ' + msg };
+}
+
+// Paydisini tidak menerima unique_code yang terlalu panjang/ber-simbol di beberapa akun;
+// pakai alfanumerik saja, maksimal 32 karakter.
+function paydisiniCode(reffId) {
+  return String(reffId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
+}
+
+async function createPaydisiniPayment(reffId, amount) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey) return { success: false, error: 'PAYDISINI_API_KEY belum diisi di .env' };
+  const uniqueCode = paydisiniCode(reffId);
+  const amt = String(Math.floor(Number(amount)));
+  const signature = md5(cfg.apiKey + uniqueCode + cfg.service + amt + cfg.validTime + 'NewTransaction');
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'new',
+      merchant_id: cfg.merchantId || undefined,
+      unique_code: uniqueCode,
+      service: cfg.service,
+      amount: amt,
+      note: `Order ${uniqueCode}`,
+      valid_time: cfg.validTime,
+      type_fee: cfg.typeFee,
+      payment_guide: 'TRUE',
+      return_url: cfg.returnUrl || undefined,
+      signature
+    });
+    const d = root.data || {};
+    if (!root.success || !d.unique_code) return paydisiniFail(root);
+    const fee = Number(d.fee || 0);
+    const respAmount = Number(d.amount || amt);
+    // Kalau balance >= amount, merchant terima penuh -> pembeli bayar amount + fee.
+    const total = Number(d.balance || 0) >= respAmount ? respAmount + fee : respAmount;
+    return {
+      success: true,
+      data: {
+        id: d.unique_code,       // status & cancel memakai unique_code
+        reff_id: d.unique_code,
+        pay_id: d.pay_id || null,
+        nominal: total,
+        fee,
+        tambahan: 0,
+        get_balance: Number(amt), // saldo user dikredit sebesar nominal yang ia minta
+        qr_string: d.qr_content || null,
+        qr_image: d.qrcode_url || null,
+        payment_url: d.checkout_url_v2 || d.checkout_url || d.checkout_url_v3 || d.checkout_url_beta || null,
+        status: 'pending',
+        created_at: d.created_at || new Date().toISOString(),
+        expired_at: d.expired || null,
+        payment_gateway: 'paydisini',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Paydisini create payment error:', error?.response?.data || error.message);
+    const data = error?.response?.data;
+    if (data && typeof data === 'object') return paydisiniFail(data);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+async function checkPaydisiniStatus(transactionId) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey) return { success: false, error: 'PAYDISINI_API_KEY belum diisi di .env' };
+  if (!transactionId) return { success: false, error: 'transactionId kosong' };
+  const uniqueCode = paydisiniCode(transactionId);
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'status',
+      unique_code: uniqueCode,
+      signature: md5(cfg.apiKey + uniqueCode + 'StatusTransaction')
+    });
+    const d = root.data || {};
+    if (!root.success) return paydisiniFail(root);
+    const amt = Number(d.amount || 0);
+    return {
+      success: true,
+      data: {
+        id: d.unique_code || uniqueCode,
+        reference: d.unique_code || uniqueCode,
+        status: String(d.status || 'unknown').toLowerCase(), // pending | success | canceled | expired
+        amount: amt,
+        fee: Number(d.fee || 0),
+        // null -> pemanggil memakai nominal yang tersimpan saat deposit dibuat,
+        // supaya fee tidak ikut terkredit ke saldo user.
+        get_balance: null,
+        qr_string: null,
+        qr_image: null,
+        paid_at: null,
+        expired_at: d.expired || null,
+        payment_gateway: 'paydisini',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Paydisini status error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+async function cancelPaydisiniPayment(transactionId) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey || !transactionId) return { success: true, skipped: true };
+  const uniqueCode = paydisiniCode(transactionId);
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'cancel',
+      unique_code: uniqueCode,
+      signature: md5(cfg.apiKey + uniqueCode + 'CancelTransaction')
+    });
+    return root.success ? { success: true } : paydisiniFail(root);
+  } catch (error) {
+    return { success: false, error: extractError(error) };
+  }
+}
+
 module.exports = {
   getActiveGateway,
+  getPaydisiniConfig,
+  createPaydisiniPayment,
+  checkPaydisiniStatus,
+  cancelPaydisiniPayment,
   getPakasirConfig,
   createPakasirPayment,
   checkPakasirStatus,
@@ -294,5 +548,8 @@ module.exports = {
   createValqenixPayment,
   checkValqenixStatus,
   cancelValqenixPayment,
-  verifyValqenixWebhook
+  verifyValqenixWebhook,
+  getTokopayConfig,
+  createTokopayPayment,
+  checkTokopayStatus
 };

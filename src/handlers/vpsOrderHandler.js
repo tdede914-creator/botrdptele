@@ -706,46 +706,65 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       reply_markup: { inline_keyboard: [[{ text: '🏠 Menu', callback_data: 'back_to_menu' }]] }
     });
 
-    let tokenInfo = await resolveTokenForInstance(vps, true);
-    if (!tokenInfo.token) throw new Error('API DigitalOcean pembuatan awal tidak ditemukan dan tidak ada API fallback yang tersedia.');
+    // REBUILD: utamakan API asal. Boleh fallback ke API LAIN asalkan PROVIDER SAMA
+    // (mis. DO api#1 mati -> pakai DO api#2). TIDAK PERNAH pindah provider (image/region beda).
+    const dcApi = require('../utils/doApi');
+    const baseUbuntuForToken = (token) => dcApi.isAwsToken(token) ? 'aws:ubuntu22.04' : (isLinodeToken(token) ? 'linode/ubuntu22.04' : (dcApi.isUpCloudToken(token) ? 'upcloud/ubuntu22.04' : 'ubuntu-22-04-x64'));
+    const providerFromInstance = () => {
+      const img = String(vps.image || '').toLowerCase();
+      if (img.startsWith('aws:')) return 'AWS';
+      if (img.startsWith('linode/')) return 'Linode';
+      if (img.startsWith('upcloud/')) return 'UpCloud';
+      if (img.startsWith('rdp:')) return Number(vps.rdp_port) === 8443 ? 'UpCloud' : null; // DO/AWS/Linode sama2 4443 -> ambigu
+      return 'DigitalOcean';
+    };
+
+    const originalInfo = await resolveTokenForInstance(vps, false);
+    const originalProvider = originalInfo.token ? dcApi.providerName(originalInfo.token) : providerFromInstance();
 
     async function createWith(info) {
       const token = info.token;
-      const createSize = (require('../utils/doApi').isAwsToken(token) && String(image || '').startsWith('aws:') && String(vps.image || '').startsWith('rdp:')) ? normalizeAwsRdpSize(size) : size;
-      const created = await createDroplet(token, `${namePrefix}-${crypto.randomBytes(4).toString('hex')}`, region, createSize, image, cloudInit);
+      // RDP dibangun dari Ubuntu sesuai provider token (fix: dulu hardcode image DO
+      // -> gagal saat provider Linode/AWS/UpCloud). VPS pakai image yang diminta.
+      const createImage = (namePrefix === 'rdp') ? baseUbuntuForToken(token) : image;
+      const createSize = (dcApi.isAwsToken(token) && namePrefix === 'rdp') ? normalizeAwsRdpSize(size) : size;
+      const created = await createDroplet(token, `${namePrefix}-${crypto.randomBytes(4).toString('hex')}`, region, createSize, createImage, cloudInit);
       if (!created || !created.dropletId) return { ok: false, error: created?.error || 'Gagal membuat droplet baru.', info };
       const ip = await waitPublicIp(token, created.dropletId, 30, 5000, region);
       if (!ip) {
         try { await deleteDroplet(token, created.dropletId, region); } catch (_) {}
         return { ok: false, error: 'IP droplet baru belum tersedia.', info };
       }
-      // Linode tidak boleh dipaksa Direct Disk sebelum installer RDP berjalan,
-      // karena tahap awal butuh GRUB untuk boot Alpine installer. Direct Disk diset tertunda saat instalasi dimulai.
       return {
-        ok: true,
-        ip,
-        dropletId: created.dropletId,
-        info,
+        ok: true, ip, dropletId: created.dropletId, info,
         sshPrivateKey: created.sshPrivateKey || null,
         sshUsername: created.sshUsername || null,
       };
     }
 
-    let made = await createWith(tokenInfo);
-    // Jika API asal order gagal/error/hilang limit, baru fallback ke API lain yang stoknya cocok.
-    if (!made.ok && tokenInfo.fromOriginal) {
-      const fallbackInfo = await resolveTokenForInstance(vps, true, tokenInfo.apiId);
-      if (fallbackInfo.token && Number(fallbackInfo.apiId) !== Number(tokenInfo.apiId)) {
-        const fbMade = await createWith(fallbackInfo);
-        if (fbMade.ok) made = fbMade;
+    // 1) Coba API asal dulu.
+    let made = null; let usedInfo = null;
+    if (originalInfo.token) { const r = await createWith(originalInfo); if (r.ok) { made = r; usedInfo = originalInfo; } }
+    // 2) Fallback: API LAIN dengan PROVIDER SAMA yang masih ada stok speknya.
+    if (!made && originalProvider) {
+      let cands = [];
+      try { cands = await vpsManager.listFallbackProductsForInstance(vps, originalInfo.apiId || null); } catch (_) { cands = []; }
+      for (const c of cands) {
+        if (!c.api_token || dcApi.providerName(c.api_token) !== originalProvider) continue;
+        const r = await createWith({ token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false });
+        if (r.ok) { made = r; usedInfo = { token: c.api_token, apiId: c.api_id, productId: c.id, fromOriginal: false }; break; }
       }
     }
-    if (!made.ok) throw new Error(made.error || 'Gagal membuat droplet baru.');
+    if (!made) {
+      if (!originalInfo.token && !originalProvider) throw new Error('API provider asal tidak ditemukan & provider tidak bisa ditentukan. Aktifkan kembali API-nya lalu coba lagi.');
+      throw new Error('Rebuild gagal: semua API dengan provider yang sama tidak bisa membuat server (cek saldo/limit akun cloud).');
+    }
 
-    tokenInfo = made.info;
+    const tokenInfo = usedInfo;
     const dropletId = made.dropletId;
     const ip = made.ip;
 
+    // Kalau memakai API/produk fallback (beda dari asal), rebalance stok & update instance.
     if (!tokenInfo.fromOriginal && tokenInfo.productId) {
       try {
         await vpsManager.decrementProductSlotDuration(tokenInfo.productId, Number(vps.duration_days) || 30);
@@ -933,7 +952,7 @@ async function executeServiceAction(bot, chatId, messageId, action, vpsId, opts 
       `🌐 IP: \`${ip}\`\n` +
       `🪟 Windows: *${osName}*\n` +
       `🔒 Port RDP: *${(rebuilt.provider === 'upcloud') ? RDP_PORT_UPCLOUD : RDP_PORT_DEFAULT}*\n\n` +
-      `⏳ Estimasi 30-40 menit (Alpine download image + DD + Windows first boot).\n` +
+      `⏳ Estimasi ±15-25 menit (Alpine download image + DD + Windows first boot).\n` +
       `🔔 Kamu akan dapat notifikasi saat RDP siap.`,
       { parse_mode: 'Markdown' }
     );
