@@ -10,6 +10,7 @@ function getActiveGateway() {
   if (raw === 'orderkuota') return 'orderkuota';
   if (raw === 'valqenix') return 'valqenix';
   if (raw === 'tokopay') return 'tokopay';
+  if (raw === 'paydisini') return 'paydisini';
   return 'dompetx';
 }
 
@@ -381,8 +382,167 @@ async function checkTokopayStatus(transactionId) {
   }
 }
 
+// ============================================================
+// PAYDISINI — QRIS (https://api.paydisini.co.id/v1/)
+// Semua request: POST form-urlencoded ke URL yang sama, dibedakan field `request`
+// (new | status | cancel). Signature = md5(key + ... + nama_aksi).
+// Status & cancel memakai unique_code milik kita (bukan pay_id).
+// ============================================================
+function getPaydisiniConfig() {
+  return {
+    apiKey: (process.env.PAYDISINI_API_KEY || process.env.PAYDISINI_KEY || '').trim(),
+    merchantId: (process.env.PAYDISINI_MERCHANT_ID || '').trim(),
+    service: (process.env.PAYDISINI_SERVICE || '11').trim() || '11',       // 11 = QRIS
+    validTime: String(Number(process.env.PAYDISINI_VALID_TIME || 1800) || 1800), // detik
+    typeFee: (process.env.PAYDISINI_TYPE_FEE || '1').trim() || '1',         // 1 = fee ditanggung pembeli, 2 = merchant
+    returnUrl: (process.env.PAYDISINI_RETURN_URL || '').trim(),
+    baseUrl: (process.env.PAYDISINI_BASE_URL || 'https://api.paydisini.co.id/v1/').trim()
+  };
+}
+
+function md5(s) { return crypto.createHash('md5').update(String(s)).digest('hex'); }
+
+async function paydisiniPost(cfg, fields) {
+  const body = new URLSearchParams();
+  Object.entries(fields).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') body.append(k, String(v)); });
+  const res = await axios.post(cfg.baseUrl, body.toString(), {
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    timeout: 30000
+  });
+  return res.data || {};
+}
+
+function paydisiniFail(root) {
+  const msg = root.msg || root.message || JSON.stringify(root).slice(0, 300);
+  return { success: false, error: 'Paydisini: ' + msg };
+}
+
+// Paydisini tidak menerima unique_code yang terlalu panjang/ber-simbol di beberapa akun;
+// pakai alfanumerik saja, maksimal 32 karakter.
+function paydisiniCode(reffId) {
+  return String(reffId || '').replace(/[^A-Za-z0-9]/g, '').slice(0, 32);
+}
+
+async function createPaydisiniPayment(reffId, amount) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey) return { success: false, error: 'PAYDISINI_API_KEY belum diisi di .env' };
+  const uniqueCode = paydisiniCode(reffId);
+  const amt = String(Math.floor(Number(amount)));
+  const signature = md5(cfg.apiKey + uniqueCode + cfg.service + amt + cfg.validTime + 'NewTransaction');
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'new',
+      merchant_id: cfg.merchantId || undefined,
+      unique_code: uniqueCode,
+      service: cfg.service,
+      amount: amt,
+      note: `Order ${uniqueCode}`,
+      valid_time: cfg.validTime,
+      type_fee: cfg.typeFee,
+      payment_guide: 'TRUE',
+      return_url: cfg.returnUrl || undefined,
+      signature
+    });
+    const d = root.data || {};
+    if (!root.success || !d.unique_code) return paydisiniFail(root);
+    const fee = Number(d.fee || 0);
+    const respAmount = Number(d.amount || amt);
+    // Kalau balance >= amount, merchant terima penuh -> pembeli bayar amount + fee.
+    const total = Number(d.balance || 0) >= respAmount ? respAmount + fee : respAmount;
+    return {
+      success: true,
+      data: {
+        id: d.unique_code,       // status & cancel memakai unique_code
+        reff_id: d.unique_code,
+        pay_id: d.pay_id || null,
+        nominal: total,
+        fee,
+        tambahan: 0,
+        get_balance: Number(amt), // saldo user dikredit sebesar nominal yang ia minta
+        qr_string: d.qr_content || null,
+        qr_image: d.qrcode_url || null,
+        payment_url: d.checkout_url_v2 || d.checkout_url || d.checkout_url_v3 || d.checkout_url_beta || null,
+        status: 'pending',
+        created_at: d.created_at || new Date().toISOString(),
+        expired_at: d.expired || null,
+        payment_gateway: 'paydisini',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Paydisini create payment error:', error?.response?.data || error.message);
+    const data = error?.response?.data;
+    if (data && typeof data === 'object') return paydisiniFail(data);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+async function checkPaydisiniStatus(transactionId) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey) return { success: false, error: 'PAYDISINI_API_KEY belum diisi di .env' };
+  if (!transactionId) return { success: false, error: 'transactionId kosong' };
+  const uniqueCode = paydisiniCode(transactionId);
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'status',
+      merchant_id: cfg.merchantId || undefined,
+      unique_code: uniqueCode,
+      signature: md5(cfg.apiKey + uniqueCode + 'StatusTransaction')
+    });
+    const d = root.data || {};
+    if (!root.success) return paydisiniFail(root);
+    const amt = Number(d.amount || 0);
+    return {
+      success: true,
+      data: {
+        id: d.unique_code || uniqueCode,
+        reference: d.unique_code || uniqueCode,
+        status: String(d.status || 'unknown').toLowerCase(), // pending | success | canceled | expired
+        amount: amt,
+        fee: Number(d.fee || 0),
+        // null -> pemanggil memakai nominal yang tersimpan saat deposit dibuat,
+        // supaya fee tidak ikut terkredit ke saldo user.
+        get_balance: null,
+        qr_string: null,
+        qr_image: null,
+        paid_at: null,
+        expired_at: d.expired || null,
+        payment_gateway: 'paydisini',
+        raw: root
+      }
+    };
+  } catch (error) {
+    console.error('Paydisini status error:', error?.response?.data || error.message);
+    return { success: false, error: extractError(error) };
+  }
+}
+
+async function cancelPaydisiniPayment(transactionId) {
+  const cfg = getPaydisiniConfig();
+  if (!cfg.apiKey || !transactionId) return { success: true, skipped: true };
+  const uniqueCode = paydisiniCode(transactionId);
+  try {
+    const root = await paydisiniPost(cfg, {
+      key: cfg.apiKey,
+      request: 'cancel',
+      merchant_id: cfg.merchantId || undefined,
+      unique_code: uniqueCode,
+      signature: md5(cfg.apiKey + uniqueCode + 'CancelTransaction')
+    });
+    return root.success ? { success: true } : paydisiniFail(root);
+  } catch (error) {
+    return { success: false, error: extractError(error) };
+  }
+}
+
 module.exports = {
   getActiveGateway,
+  getPaydisiniConfig,
+  createPaydisiniPayment,
+  checkPaydisiniStatus,
+  cancelPaydisiniPayment,
   getPakasirConfig,
   createPakasirPayment,
   checkPakasirStatus,

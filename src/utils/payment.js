@@ -227,6 +227,9 @@ async function createPayment(apiKey, reffId, amount) {
   if (gateway === 'tokopay') {
     return require('./paymentGateway').createTokopayPayment(reffId, amount);
   }
+  if (gateway === 'paydisini') {
+    return require('./paymentGateway').createPaydisiniPayment(reffId, amount);
+  }
   return createDompetXPayment(apiKey, reffId, amount);
 }
 
@@ -244,6 +247,9 @@ async function checkPaymentStatus(apiKeyOrTransactionId, maybeTransactionId, may
   }
   if (gateway === 'tokopay') {
     return require('./paymentGateway').checkTokopayStatus(transactionId);
+  }
+  if (gateway === 'paydisini') {
+    return require('./paymentGateway').checkPaydisiniStatus(transactionId);
   }
   return checkDompetXStatus(apiKeyOrTransactionId, maybeTransactionId);
 }
@@ -263,6 +269,9 @@ async function cancelPayment(transactionId) {
   }
   if (gateway === 'valqenix') {
     return require('./paymentGateway').cancelValqenixPayment(transactionId);
+  }
+  if (gateway === 'paydisini') {
+    return require('./paymentGateway').cancelPaydisiniPayment(transactionId);
   }
   // Pakasir & DompetX adapter belum expose cancel endpoint.
   return { success: true, skipped: true, reason: `cancel not implemented for gateway=${gateway}` };
